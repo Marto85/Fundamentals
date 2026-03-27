@@ -42,7 +42,12 @@ _session = make_session()
 
 
 def get_ticker(symbol: str):
-    return yf.Ticker(symbol)
+    try:
+        from curl_cffi import requests as curl_requests
+        session = curl_requests.Session(impersonate="chrome")
+        return yf.Ticker(symbol, session=session)
+    except ImportError:
+        return yf.Ticker(symbol)
 
 
 def clean(val):
