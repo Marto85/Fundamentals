@@ -85,7 +85,7 @@ def fetch_with_retry(fn, retries=3, delay=2):
             time.sleep(wait)
 
 
-@app.get("/search")
+@app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
     try:
         url = "https://query2.finance.yahoo.com/v1/finance/search"
@@ -107,7 +107,7 @@ async def search(q: str = Query(..., min_length=1)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/company/{ticker}")
+@app.get("/api/company/{ticker}")
 async def get_company(ticker: str):
     try:
         symbol = ticker.upper()
@@ -262,7 +262,7 @@ async def get_company(ticker: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/chart/{ticker}")
+@app.get("/api/chart/{ticker}")
 async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
     try:
         symbol = ticker.upper()
@@ -295,7 +295,7 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/compare")
+@app.get("/api/compare")
 async def compare(tickers: str):
     ticker_list = [t.strip().upper() for t in tickers.split(",")][:8]
     results = []
