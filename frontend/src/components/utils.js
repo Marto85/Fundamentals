@@ -1,4 +1,4 @@
-export const API_URL = import.meta.env.VITE_API_URL || 'https://fundamentals-ypwi.onrender.com'
+export const API_URL = '/api'
 
 export function fmt(val, decimals = 2) {
   if (val === null || val === undefined) return '—'
