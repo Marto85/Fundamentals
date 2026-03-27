@@ -72,12 +72,12 @@ export default function App() {
       <header className="sticky top-0 z-40 bg-bg/80 backdrop-blur-xl border-b border-border/50">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-4">
           {/* Logo */}
-          <div className="flex items-center gap-2 mr-2">
+          <button onClick={() => { setSingleData(null); setSingleError(null); setTab("single"); }} className="flex items-center gap-2 mr-2 hover:opacity-80 transition-opacity cursor-pointer">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-gold to-amber-600 flex items-center justify-center">
               <BarChart2 size={14} className="text-white" />
             </div>
             <span className="font-display font-bold text-text text-lg glow-gold">Fundamentals</span>
-          </div>
+          </button>
 
           {/* Tabs */}
           <nav className="flex gap-1">

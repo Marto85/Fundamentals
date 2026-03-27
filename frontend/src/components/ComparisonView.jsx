@@ -34,7 +34,9 @@ const METRICS = [
   { key: 'balance_sheet.de_ratio',    label: 'Deuda / Equity',       fmt: v => fmtRatio(v) },
   { sep: true, label: 'FLUJO DE CAJA' },
   { key: 'cash_flow.fcf',             label: 'Free Cash Flow',       fmt: fmt, color: true },
-  { key: 'cash_flow.fcf_yield',       label: 'FCF Yield',            fmt: fmtPct, color: true },
+  { key: 'cash_flow.fcf_yield',       label: 'FCF / Market Cap',     fmt: fmtPct, color: true },
+  { key: 'cash_flow.fcf_margin',      label: 'FCF Margin',           fmt: fmtPct, color: true },
+  { key: 'cash_flow.fcf_quality',     label: 'FCF / Net Income',     fmt: v => v !== null && v !== undefined ? v.toFixed(2)+'x' : '—', color: true },
   { key: 'cash_flow.operating',       label: 'Flujo Operativo',      fmt: fmt, color: true },
 ]
 
