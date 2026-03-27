@@ -36,10 +36,17 @@ def make_session():
 
 _session = make_session()
 
-# ── yfinance: force custom session to avoid blocks on Render ──────────────────
+# ── yfinance: session with Cookie fetching to bypass silent blocks ────────────
 def get_ticker(symbol: str):
-    """Inyectamos la sesión personalizada para evitar el error 429 Too Many Requests"""
-    return yf.Ticker(symbol)
+    """Hacemos una visita previa a Yahoo para obtener una cookie humana válida"""
+    try:
+        # Visitamos la home de Yahoo Finance rápido para que nos den una cookie
+        _session.get("https://finance.yahoo.com", timeout=5)
+    except Exception:
+        pass
+        
+    # Ahora sí, le mandamos a yfinance nuestra sesión con el User-Agent y la Cookie
+    return yf.Ticker(symbol, session=_session)
 
 
 def clean(val):
