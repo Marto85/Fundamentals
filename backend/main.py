@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── requests session (used only for /search) ──────────────────────────────────
+# ── requests session (used to bypass Yahoo Finance 429 errors) ────────────────
 def make_session():
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -36,10 +36,10 @@ def make_session():
 
 _session = make_session()
 
-# ── yfinance: let it manage its own session (curl_cffi internally) ────────────
+# ── yfinance: force custom session to avoid blocks on Render ──────────────────
 def get_ticker(symbol: str):
-    """yfinance >= 0.2.48 uses curl_cffi internally when available — no session needed."""
-    return yf.Ticker(symbol)
+    """Inyectamos la sesión personalizada para evitar el error 429 Too Many Requests"""
+    return yf.Ticker(symbol, session=_session)
 
 
 def clean(val):
