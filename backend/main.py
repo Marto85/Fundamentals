@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── requests session (SOLO PARA LA BARRA DE BÚSQUEDA) ─────────────────────────
+# ── requests session (solo para búsqueda) ─────────────────────────────────────
 def make_session():
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -36,9 +36,13 @@ def make_session():
 
 _session = make_session()
 
-# ── yfinance: DEJAMOS QUE USE SU PROPIA MAGIA ─────────────────────────────────
+# ── caché en memoria ──────────────────────────────────────────────────────────
+COMPANY_CACHE: dict = {}
+CHART_CACHE:   dict = {}
+CACHE_EXPIRE = 3600  # 1 hora
+
+
 def get_ticker(symbol: str):
-    """NO pasamos sesión aquí. Dejamos que YF use curl_cffi nativo."""
     return yf.Ticker(symbol)
 
 
@@ -75,14 +79,10 @@ def get_recent(df, *fields):
 
 
 def safe_fetch(fn, retries=3, delay=3):
-    """Call fn() with retries. Intercepta bloqueos silenciosos de Yahoo."""
     last_err = None
     for attempt in range(retries):
         try:
             result = fn()
-            # Si Yahoo devuelve un dict vacío por bloqueo 429, forzamos reintento
-            if isinstance(result, dict) and not result:
-                raise ValueError("Yahoo devolvió datos vacíos (Posible 429)")
             return result
         except Exception as e:
             last_err = e
@@ -92,10 +92,18 @@ def safe_fetch(fn, retries=3, delay=3):
     raise last_err
 
 
-# ── CACHÉ EN MEMORIA (Evita bloqueos por peticiones repetidas) ────────────────
-COMPANY_CACHE = {}
-CHART_CACHE = {}
-CACHE_EXPIRE = 3600  # Los datos duran 1 hora en memoria
+def validate_info(info, symbol):
+    """Valida que el dict de info tenga al menos algún dato útil."""
+    if not info or not isinstance(info, dict):
+        raise HTTPException(status_code=404, detail=f"No se encontró '{symbol}'")
+    # Aceptamos cualquier campo que indique que es una empresa real
+    has_data = any(info.get(k) for k in [
+        "marketCap", "currentPrice", "regularMarketPrice",
+        "previousClose", "longName", "shortName", "symbol",
+        "regularMarketOpen", "fiftyTwoWeekHigh"
+    ])
+    if not has_data:
+        raise HTTPException(status_code=404, detail=f"Empresa '{symbol}' no encontrada o sin datos")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +135,6 @@ async def get_company(ticker: str):
     symbol = ticker.upper()
     now = time.time()
 
-    # 1. Chequear si ya tenemos la info en Caché
     if symbol in COMPANY_CACHE:
         if now - COMPANY_CACHE[symbol]["timestamp"] < CACHE_EXPIRE:
             return COMPANY_CACHE[symbol]["data"]
@@ -140,10 +147,7 @@ async def get_company(ticker: str):
         balance = safe_fetch(lambda: t.balance_sheet)
         cf      = safe_fetch(lambda: t.cashflow)
 
-        if not info or not isinstance(info, dict):
-            raise HTTPException(status_code=404, detail=f"No data found for '{ticker}'")
-        if not info.get("marketCap") and not info.get("currentPrice") and not info.get("regularMarketPrice"):
-            raise HTTPException(status_code=404, detail=f"Company '{ticker}' not found")
+        validate_info(info, symbol)
 
         # ── Revenue ───────────────────────────────────────────────────────────
         total_rev    = get_recent(income, "Total Revenue")
@@ -177,7 +181,7 @@ async def get_company(ticker: str):
         if fcf is None and op_cf is not None and capex is not None:
             fcf = op_cf + capex if capex < 0 else op_cf - capex
 
-        # ── Derived ratios ────────────────────────────────────────────────────
+        # ── Ratios ────────────────────────────────────────────────────────────
         def ratio(n, d):
             if n is not None and d and d != 0:
                 return n / d
@@ -267,7 +271,6 @@ async def get_company(ticker: str):
             },
         }
 
-        # 2. Guardar en Caché para la próxima vez
         COMPANY_CACHE[symbol] = {"timestamp": now, "data": final_data}
         return final_data
 
@@ -323,7 +326,7 @@ async def compare(tickers: str):
         try:
             data = await get_company(ticker)
             results.append(data)
-            time.sleep(1) # Un respiro mayor entre consultas
+            time.sleep(1)
         except Exception as e:
             results.append({"symbol": ticker, "error": str(e)})
     return results
