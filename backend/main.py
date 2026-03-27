@@ -40,14 +40,18 @@ def make_session():
 
 _session = make_session()
 
+# curl_cffi session for yfinance (bypasses Yahoo cloud IP blocks)
+try:
+    from curl_cffi import requests as curl_requests
+    _yf_session = curl_requests.Session(impersonate="chrome")
+except ImportError:
+    _yf_session = None
+
 
 def get_ticker(symbol: str):
-    try:
-        from curl_cffi import requests as curl_requests
-        session = curl_requests.Session(impersonate="chrome")
-        return yf.Ticker(symbol, session=session)
-    except ImportError:
-        return yf.Ticker(symbol)
+    if _yf_session is not None:
+        return yf.Ticker(symbol, session=_yf_session)
+    return yf.Ticker(symbol)
 
 
 def clean(val):
