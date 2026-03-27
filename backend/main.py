@@ -39,7 +39,7 @@ _session = make_session()
 # ── yfinance: force custom session to avoid blocks on Render ──────────────────
 def get_ticker(symbol: str):
     """Inyectamos la sesión personalizada para evitar el error 429 Too Many Requests"""
-    return yf.Ticker(symbol, session=_session)
+    return yf.Ticker(symbol)
 
 
 def clean(val):
