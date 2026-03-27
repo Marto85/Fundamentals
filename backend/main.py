@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── requests session (used to bypass Yahoo Finance 429 errors) ────────────────
+# ── requests session (SOLO PARA LA BARRA DE BÚSQUEDA) ─────────────────────────
 def make_session():
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -36,17 +36,10 @@ def make_session():
 
 _session = make_session()
 
-# ── yfinance: session with Cookie fetching to bypass silent blocks ────────────
+# ── yfinance: DEJAMOS QUE USE SU PROPIA MAGIA ─────────────────────────────────
 def get_ticker(symbol: str):
-    """Hacemos una visita previa a Yahoo para obtener una cookie humana válida"""
-    try:
-        # Visitamos la home de Yahoo Finance rápido para que nos den una cookie
-        _session.get("https://finance.yahoo.com", timeout=5)
-    except Exception:
-        pass
-        
-    # Ahora sí, le mandamos a yfinance nuestra sesión con el User-Agent y la Cookie
-    return yf.Ticker(symbol, session=_session)
+    """NO pasamos sesión aquí. Dejamos que YF use curl_cffi nativo."""
+    return yf.Ticker(symbol)
 
 
 def clean(val):
@@ -82,11 +75,14 @@ def get_recent(df, *fields):
 
 
 def safe_fetch(fn, retries=3, delay=3):
-    """Call fn() with retries on any exception."""
+    """Call fn() with retries. Intercepta bloqueos silenciosos de Yahoo."""
     last_err = None
     for attempt in range(retries):
         try:
             result = fn()
+            # Si Yahoo devuelve un dict vacío por bloqueo 429, forzamos reintento
+            if isinstance(result, dict) and not result:
+                raise ValueError("Yahoo devolvió datos vacíos (Posible 429)")
             return result
         except Exception as e:
             last_err = e
@@ -94,6 +90,12 @@ def safe_fetch(fn, retries=3, delay=3):
                 wait = delay * (2 ** attempt) + random.uniform(0, 1)
                 time.sleep(wait)
     raise last_err
+
+
+# ── CACHÉ EN MEMORIA (Evita bloqueos por peticiones repetidas) ────────────────
+COMPANY_CACHE = {}
+CHART_CACHE = {}
+CACHE_EXPIRE = 3600  # Los datos duran 1 hora en memoria
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,11 +124,17 @@ async def search(q: str = Query(..., min_length=1)):
 
 @app.get("/api/company/{ticker}")
 async def get_company(ticker: str):
+    symbol = ticker.upper()
+    now = time.time()
+
+    # 1. Chequear si ya tenemos la info en Caché
+    if symbol in COMPANY_CACHE:
+        if now - COMPANY_CACHE[symbol]["timestamp"] < CACHE_EXPIRE:
+            return COMPANY_CACHE[symbol]["data"]
+
     try:
-        symbol = ticker.upper()
         t = get_ticker(symbol)
 
-        # Fetch each piece separately with retries so one failure doesn't kill all
         info    = safe_fetch(lambda: t.info)
         income  = safe_fetch(lambda: t.income_stmt)
         balance = safe_fetch(lambda: t.balance_sheet)
@@ -195,7 +203,7 @@ async def get_company(ticker: str):
         price_change = (price - prev_close) if (price and prev_close) else None
         price_pct    = ratio(price_change, prev_close)
 
-        return {
+        final_data = {
             "symbol":      symbol,
             "name":        info.get("longName") or info.get("shortName"),
             "sector":      info.get("sector"),
@@ -259,6 +267,10 @@ async def get_company(ticker: str):
             },
         }
 
+        # 2. Guardar en Caché para la próxima vez
+        COMPANY_CACHE[symbol] = {"timestamp": now, "data": final_data}
+        return final_data
+
     except HTTPException:
         raise
     except Exception as e:
@@ -267,8 +279,15 @@ async def get_company(ticker: str):
 
 @app.get("/api/chart/{ticker}")
 async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
+    symbol = ticker.upper()
+    now = time.time()
+
+    cache_key = f"{symbol}_{period}_{interval}"
+    if cache_key in CHART_CACHE:
+        if now - CHART_CACHE[cache_key]["timestamp"] < CACHE_EXPIRE:
+            return CHART_CACHE[cache_key]["data"]
+
     try:
-        symbol = ticker.upper()
         t = get_ticker(symbol)
         hist = safe_fetch(lambda: t.history(period=period, interval=interval))
 
@@ -286,7 +305,9 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
                 "volume": int(row["Volume"]),
             })
 
-        return {"ticker": symbol, "candles": candles}
+        final_data = {"ticker": symbol, "candles": candles}
+        CHART_CACHE[cache_key] = {"timestamp": now, "data": final_data}
+        return final_data
 
     except HTTPException:
         raise
@@ -302,7 +323,7 @@ async def compare(tickers: str):
         try:
             data = await get_company(ticker)
             results.append(data)
-            time.sleep(0.8)
+            time.sleep(1) # Un respiro mayor entre consultas
         except Exception as e:
             results.append({"symbol": ticker, "error": str(e)})
     return results
