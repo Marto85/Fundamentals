@@ -307,3 +307,19 @@ async def compare(tickers: str):
         except Exception as e:
             results.append({"symbol": ticker, "error": str(e)})
     return results
+
+# ── Serve React frontend (production build) ───────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        # API routes are already handled above — this catches everything else
+        index = os.path.join(STATIC_DIR, "index.html")
+        return FileResponse(index)
