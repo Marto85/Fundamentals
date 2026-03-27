@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Session with browser-like headers to avoid Yahoo 429 ─────────────────────
+# ── requests session (used only for /search) ──────────────────────────────────
 def make_session():
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -31,26 +31,14 @@ def make_session():
         ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     })
     return session
 
 _session = make_session()
 
-# curl_cffi session for yfinance (bypasses Yahoo cloud IP blocks)
-try:
-    from curl_cffi import requests as curl_requests
-    _yf_session = curl_requests.Session(impersonate="chrome")
-except ImportError:
-    _yf_session = None
-
-
+# ── yfinance: let it manage its own session (curl_cffi internally) ────────────
 def get_ticker(symbol: str):
-    if _yf_session is not None:
-        return yf.Ticker(symbol, session=_yf_session)
+    """yfinance >= 0.2.48 uses curl_cffi internally when available — no session needed."""
     return yf.Ticker(symbol)
 
 
@@ -67,32 +55,41 @@ def clean(val):
 
 
 def get_recent(df, *fields):
-    if df is None or df.empty:
+    if df is None:
+        return None
+    try:
+        if df.empty:
+            return None
+    except Exception:
         return None
     for field in fields:
         if field in df.index:
             for col in df.columns:
-                val = clean(df.loc[field, col])
-                if val is not None:
-                    return val
+                try:
+                    val = clean(df.loc[field, col])
+                    if val is not None:
+                        return val
+                except Exception:
+                    continue
     return None
 
 
-def fetch_with_retry(fn, retries=3, delay=2):
+def safe_fetch(fn, retries=3, delay=3):
+    """Call fn() with retries on any exception."""
+    last_err = None
     for attempt in range(retries):
         try:
-            return fn()
+            result = fn()
+            return result
         except Exception as e:
-            msg = str(e).lower()
-            is_rate_limit = "429" in msg or "too many requests" in msg
-            is_last = attempt == retries - 1
-            if is_last:
-                raise
-            wait = delay * (2 ** attempt) + random.uniform(0, 1)
-            if is_rate_limit:
-                wait = max(wait, 5)
-            time.sleep(wait)
+            last_err = e
+            if attempt < retries - 1:
+                wait = delay * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(wait)
+    raise last_err
 
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
@@ -120,19 +117,18 @@ async def search(q: str = Query(..., min_length=1)):
 async def get_company(ticker: str):
     try:
         symbol = ticker.upper()
+        t = get_ticker(symbol)
 
-        def _fetch():
-            t = get_ticker(symbol)
-            info    = t.info
-            income  = t.income_stmt
-            balance = t.balance_sheet
-            cf      = t.cashflow
-            return info, income, balance, cf
+        # Fetch each piece separately with retries so one failure doesn't kill all
+        info    = safe_fetch(lambda: t.info)
+        income  = safe_fetch(lambda: t.income_stmt)
+        balance = safe_fetch(lambda: t.balance_sheet)
+        cf      = safe_fetch(lambda: t.cashflow)
 
-        info, income, balance, cf = fetch_with_retry(_fetch)
-
-        if not info or (not info.get("marketCap") and not info.get("currentPrice")):
-            raise HTTPException(status_code=404, detail=f"Company '{ticker}' not found or no data available")
+        if not info or not isinstance(info, dict):
+            raise HTTPException(status_code=404, detail=f"No data found for '{ticker}'")
+        if not info.get("marketCap") and not info.get("currentPrice") and not info.get("regularMarketPrice"):
+            raise HTTPException(status_code=404, detail=f"Company '{ticker}' not found")
 
         # ── Revenue ───────────────────────────────────────────────────────────
         total_rev    = get_recent(income, "Total Revenue")
@@ -151,21 +147,17 @@ async def get_company(ticker: str):
 
         # ── Balance sheet ─────────────────────────────────────────────────────
         total_assets = get_recent(balance, "Total Assets")
-        total_liab   = get_recent(balance, "Total Liabilities Net Minority Interest",
-                                  "Total Liabilities")
+        total_liab   = get_recent(balance, "Total Liabilities Net Minority Interest", "Total Liabilities")
         equity       = get_recent(balance, "Stockholders Equity", "Common Stock Equity",
                                   "Total Equity Gross Minority Interest")
-        total_debt   = get_recent(balance, "Total Debt",
-                                  "Long Term Debt And Capital Lease Obligation")
-        cash         = get_recent(balance,
-                                  "Cash And Cash Equivalents",
+        total_debt   = get_recent(balance, "Total Debt", "Long Term Debt And Capital Lease Obligation")
+        cash         = get_recent(balance, "Cash And Cash Equivalents",
                                   "Cash Cash Equivalents And Short Term Investments",
                                   "Cash And Cash Equivalents And Short Term Investments")
 
         # ── Cash flow ─────────────────────────────────────────────────────────
         op_cf  = get_recent(cf, "Operating Cash Flow", "Cash Flows From Operations")
-        capex  = get_recent(cf, "Capital Expenditure",
-                            "Purchase Of Property Plant And Equipment")
+        capex  = get_recent(cf, "Capital Expenditure", "Purchase Of Property Plant And Equipment")
         fcf    = get_recent(cf, "Free Cash Flow")
         if fcf is None and op_cf is not None and capex is not None:
             fcf = op_cf + capex if capex < 0 else op_cf - capex
@@ -176,25 +168,25 @@ async def get_company(ticker: str):
                 return n / d
             return None
 
-        gross_margin  = ratio(gross_profit, total_rev)
-        op_margin     = ratio(op_income,    total_rev)
-        net_margin    = ratio(net_income,   total_rev)
-        roe           = ratio(net_income,   equity)
-        roa           = ratio(net_income,   total_assets)
-        de_ratio      = ratio(total_debt,   equity)
-        net_debt      = (total_debt - cash) if (total_debt is not None and cash is not None) else None
+        gross_margin = ratio(gross_profit, total_rev)
+        op_margin    = ratio(op_income, total_rev)
+        net_margin   = ratio(net_income, total_rev)
+        roe          = ratio(net_income, equity)
+        roa          = ratio(net_income, total_assets)
+        de_ratio     = ratio(total_debt, equity)
+        net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
 
-        market_cap    = clean(info.get("marketCap"))
-        ev            = (market_cap + net_debt) if (market_cap and net_debt is not None) else None
-        ev_ebitda     = ratio(ev, ebitda)
-        fcf_yield     = ratio(fcf, market_cap)        # FCF / Market Cap
-        fcf_margin    = ratio(fcf, total_rev)          # FCF / Revenue  (NEW)
-        fcf_quality   = ratio(fcf, net_income)         # FCF / Net Income (NEW)
+        market_cap  = clean(info.get("marketCap"))
+        ev          = (market_cap + net_debt) if (market_cap and net_debt is not None) else None
+        ev_ebitda   = ratio(ev, ebitda)
+        fcf_yield   = ratio(fcf, market_cap)
+        fcf_margin  = ratio(fcf, total_rev)
+        fcf_quality = ratio(fcf, net_income)
 
-        price         = clean(info.get("currentPrice") or info.get("regularMarketPrice"))
-        prev_close    = clean(info.get("previousClose"))
-        price_change  = (price - prev_close) if (price and prev_close) else None
-        price_pct     = ratio(price_change, prev_close)
+        price        = clean(info.get("currentPrice") or info.get("regularMarketPrice"))
+        prev_close   = clean(info.get("previousClose"))
+        price_change = (price - prev_close) if (price and prev_close) else None
+        price_pct    = ratio(price_change, prev_close)
 
         return {
             "symbol":      symbol,
@@ -206,7 +198,6 @@ async def get_company(ticker: str):
             "currency":    info.get("currency", "USD"),
             "website":     info.get("website"),
             "employees":   clean(info.get("fullTimeEmployees")),
-
             "market": {
                 "price":          price,
                 "price_change":   price_change,
@@ -225,7 +216,6 @@ async def get_company(ticker: str):
                 "dividend_yield": clean(info.get("dividendYield")),
                 "beta":           clean(info.get("beta")),
             },
-
             "revenue": {
                 "total":         total_rev,
                 "recurring":     op_rev,
@@ -233,7 +223,6 @@ async def get_company(ticker: str):
                 "gross_profit":  gross_profit,
                 "gross_margin":  gross_margin,
             },
-
             "profitability": {
                 "ebit":       op_income,
                 "ebitda":     ebitda,
@@ -244,7 +233,6 @@ async def get_company(ticker: str):
                 "roe":        roe,
                 "roa":        roa,
             },
-
             "balance_sheet": {
                 "total_assets": total_assets,
                 "total_liab":   total_liab,
@@ -254,14 +242,13 @@ async def get_company(ticker: str):
                 "cash":         cash,
                 "de_ratio":     de_ratio,
             },
-
             "cash_flow": {
                 "operating":   op_cf,
                 "capex":       capex,
                 "fcf":         fcf,
                 "fcf_yield":   fcf_yield,
-                "fcf_margin":  fcf_margin,   # NEW: FCF / Revenue
-                "fcf_quality": fcf_quality,  # NEW: FCF / Net Income
+                "fcf_margin":  fcf_margin,
+                "fcf_quality": fcf_quality,
             },
         }
 
@@ -275,14 +262,10 @@ async def get_company(ticker: str):
 async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
     try:
         symbol = ticker.upper()
+        t = get_ticker(symbol)
+        hist = safe_fetch(lambda: t.history(period=period, interval=interval))
 
-        def _fetch():
-            t = get_ticker(symbol)
-            return t.history(period=period, interval=interval)
-
-        hist = fetch_with_retry(_fetch)
-
-        if hist.empty:
+        if hist is None or hist.empty:
             raise HTTPException(status_code=404, detail="No price data found")
 
         candles = []
@@ -312,10 +295,11 @@ async def compare(tickers: str):
         try:
             data = await get_company(ticker)
             results.append(data)
-            time.sleep(0.5)
+            time.sleep(0.8)
         except Exception as e:
             results.append({"symbol": ticker, "error": str(e)})
     return results
+
 
 # ── Serve React frontend (production build) ───────────────────────────────────
 from fastapi.staticfiles import StaticFiles
@@ -329,6 +313,5 @@ if os.path.exists(STATIC_DIR):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
-        # API routes are already handled above — this catches everything else
         index = os.path.join(STATIC_DIR, "index.html")
         return FileResponse(index)
