@@ -1,0 +1,11 @@
+echo "# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Node - dist/ NO se ignora, lo necesita Render
+node_modules/
+
+# OS
+.DS_Store" > .gitignore
