@@ -63,7 +63,6 @@ def fetch_yahoo_info(symbol: str) -> dict:
         summary_params["crumb"] = _crumb
         r = _curl.get(summary_url, params=summary_params, timeout=15)
 
-    # Ahora sí pasamos el error REAL al frontend para no volvernos locos
     if r.status_code != 200:
         raise HTTPException(status_code=r.status_code, detail=f"Yahoo bloqueó la petición: Status {r.status_code}")
 
@@ -231,6 +230,12 @@ async def get_company(ticker: str):
         net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
         ev           = clean(extract(ks, "enterpriseValue")) or (market_cap + net_debt) if (market_cap and net_debt is not None) else None
         
+        # ── PARCHE: Acciones en circulación para el DCF ──
+        shares_outstanding = clean(extract(ks, "sharesOutstanding"))
+        if not shares_outstanding and market_cap and price:
+            shares_outstanding = market_cap / price
+        # ─────────────────────────────────────────────────
+
         final_data = {
             "symbol":      symbol,
             "name":        name,
@@ -246,6 +251,7 @@ async def get_company(ticker: str):
                 "price_change":   price_change,
                 "price_pct":      ratio(price_change, prev_close),
                 "market_cap":     market_cap,
+                "shares_outstanding": shares_outstanding, # <--- Dato inyectado acá
                 "ev":             ev,
                 "high_52w":       high_52w,
                 "low_52w":        low_52w,
