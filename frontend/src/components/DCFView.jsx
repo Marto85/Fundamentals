@@ -1,8 +1,51 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Calculator, Loader2, AlertCircle, Search, Settings2, FileText } from 'lucide-react'
+import { Calculator, Loader2, AlertCircle, Search, Settings2, FileText, Info } from 'lucide-react'
 import SearchBar from './SearchBar'
-import { API_URL, fmtPrice, fmt } from './utils'
+import { API_URL, fmtPrice, fmt, fmtPct } from './utils'
+
+// ── Componente Popover Corregido (Anti-Bugs) ─────────────────────────────────
+function PopoverInfo({ title, content }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="relative inline-block ml-2">
+      <button 
+        type="button"
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen(!open)
+        }} 
+        className="text-muted hover:text-gold transition-colors p-0.5 rounded-full bg-surface focus:outline-none"
+      >
+        <Info size={14} />
+      </button>
+      
+      {open && (
+        <>
+          {/* Capa invisible para cerrar al hacer clic afuera (ahora frena el clic) */}
+          <div 
+            className="fixed inset-0 z-40" 
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setOpen(false)
+            }}
+          />
+          
+          <div 
+            className="absolute z-50 bottom-full mb-2 w-64 -left-28 sm:left-1/2 sm:-translate-x-1/2 bg-card border border-gold/30 p-4 rounded-xl shadow-2xl text-xs text-subtle text-left font-body fade-in cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <strong className="block text-text font-display mb-1.5 text-sm">{title}</strong>
+            <div className="space-y-2">{content}</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 export default function DCFView() {
   const { ticker } = useParams()
@@ -24,8 +67,8 @@ export default function DCFView() {
     setLoading(true)
     setError(null)
     setData(null)
-    setResult(null) // Reseteamos el resultado al buscar nueva empresa
-    setGrowthRate('') // Obligamos al usuario a pensar su propia tasa
+    setResult(null)
+    setGrowthRate('') 
     try {
       const res = await fetch(`${API_URL}/company/${symbol}`)
       if (!res.ok) throw new Error('Error al conectar con el servidor')
@@ -43,11 +86,6 @@ export default function DCFView() {
   }, [ticker, loadCompany])
 
   useEffect(() => {
-    if (ticker) loadCompany(ticker)
-  }, [ticker, loadCompany])
-
-  // NUEVO: Si la URL no tiene ticker (ej: /dcf), borramos todo.
-  useEffect(() => {
     if (!ticker) {
       setData(null)
       setResult(null)
@@ -55,7 +93,6 @@ export default function DCFView() {
     }
   }, [ticker])
 
-  // Motor de cálculo ejecutado por el usuario
   const handleCalculate = () => {
     if (!data) return
 
@@ -73,11 +110,10 @@ export default function DCFView() {
     }
 
     if (r <= tg) {
-      alert("Error Matemático: La Tasa de Descuento debe ser estrictamente mayor a la Tasa de Crecimiento Terminal.")
+      alert("Error Matemático: La Tasa de Descuento (WACC) debe ser estrictamente mayor a la Tasa de Crecimiento Terminal.")
       return
     }
 
-    // 1. Proyección a 5 años
     let projectedFlows = []
     let pvSum = 0
     let currentFcf = fcf
@@ -89,11 +125,9 @@ export default function DCFView() {
       projectedFlows.push({ year: i, fcf: currentFcf, discounted: discounted })
     }
 
-    // 2. Valor Terminal (Modelo Gordon)
     const terminalValue = (projectedFlows[4].fcf * (1 + tg)) / (r - tg)
     const discountedTv = terminalValue / Math.pow(1 + r, 5)
 
-    // 3. Enterprise Value y Equity Value
     const enterpriseValue = pvSum + discountedTv
     const equityValue = enterpriseValue - netDebt
     const intrinsicValue = Math.max(0, equityValue / shares)
@@ -120,6 +154,10 @@ export default function DCFView() {
     const fcf = data.cash_flow?.fcf
     const netDebt = data.balance_sheet?.net_debt
     const shares = data.market?.shares_outstanding
+    
+    // Extraemos los promedios históricos
+    const fcfCagr = data.cash_flow?.fcf_cagr
+    const niCagr = data.profitability?.ni_cagr
 
     if (!fcf || fcf <= 0 || !shares) {
       return (
@@ -173,30 +211,72 @@ export default function DCFView() {
               <Settings2 size={16} /> 2. Premisas del Analista
             </h3>
             <div className="grid sm:grid-cols-3 gap-6">
+              
+              {/* Input: Crecimiento */}
               <div>
-                <label className="block text-xs text-subtle mb-2">Crecimiento Est. (Años 1-5)</label>
+                <label className="block text-xs text-subtle mb-2">Crecimiento FCF (Años 1-5)</label>
                 <div className="relative">
                   <input type="number" value={growthRate} onChange={e => setGrowthRate(e.target.value)} placeholder="Ej: 12" className="w-full bg-surface border border-border rounded-lg py-2 pl-3 pr-8 text-text font-mono text-sm focus:outline-none focus:border-gold/50 transition-colors" />
                   <span className="absolute right-3 top-2 text-muted text-sm">%</span>
                 </div>
+                {/* Referencia Histórica Inteligente */}
+                <p className="text-[10px] text-muted mt-2 border-t border-border/50 pt-1.5 leading-tight">
+                  Promedio anual histórico:<br/>
+                  {fcfCagr !== null && fcfCagr !== undefined ? (
+                    <><span className="text-emerald font-mono font-medium">{fmtPct(fcfCagr)}</span> en Flujo de Caja Libre (FCF)</>
+                  ) : (niCagr !== null && niCagr !== undefined ? (
+                    <><span className="text-sky font-mono font-medium">{fmtPct(niCagr)}</span> en Beneficio Neto (Proxy del FCF)</>
+                  ) : (
+                    <span className="text-subtle">No hay datos históricos suficientes</span>
+                  ))}
+                </p>
               </div>
+
+              {/* Input: Tasa Terminal */}
               <div>
-                <label className="block text-xs text-subtle mb-2">Tasa Terminal (Perpetuidad)</label>
+                <div className="flex items-center mb-2">
+                  <label className="block text-xs text-subtle">Tasa Terminal</label>
+                  <PopoverInfo 
+                    title="Tasa de Crecimiento a Perpetuidad" 
+                    content={
+                      <>
+                        <p>Es el ritmo al que la empresa crecerá <strong>para siempre</strong> después del año 5.</p>
+                        <p className="mt-2 text-gold"><strong>Estándar: 2% a 3%</strong></p>
+                        <p className="mt-1">Regla de oro: Ninguna empresa puede crecer a perpetuidad más rápido que la inflación mundial o el PBI global.</p>
+                      </>
+                    } 
+                  />
+                </div>
                 <div className="relative">
                   <input type="number" value={terminalGrowth} onChange={e => setTerminalGrowth(e.target.value)} placeholder="2.5" className="w-full bg-surface border border-border rounded-lg py-2 pl-3 pr-8 text-text font-mono text-sm focus:outline-none focus:border-gold/50 transition-colors" />
                   <span className="absolute right-3 top-2 text-muted text-sm">%</span>
                 </div>
               </div>
+
+              {/* Input: WACC */}
               <div>
-                <label className="block text-xs text-subtle mb-2">Tasa de Descuento (WACC)</label>
+                <div className="flex items-center mb-2">
+                  <label className="block text-xs text-subtle">Tasa de Descuento (WACC)</label>
+                  <PopoverInfo 
+                    title="Costo Promedio Ponderado del Capital (WACC)" 
+                    content={
+                      <>
+                        <p>Es el rendimiento <strong>mínimo</strong> que le exigís a la inversión para asumir el riesgo de comprar estas acciones.</p>
+                        <p className="mt-2 text-gold"><strong>Estándar: 8% a 12%</strong></p>
+                        <p className="mt-1">Usá un 8-9% para empresas ultra estables (ej: Apple, J&J) y un 10-12% para tecnológicas o empresas con deuda alta y mucho riesgo.</p>
+                      </>
+                    } 
+                  />
+                </div>
                 <div className="relative">
                   <input type="number" value={discountRate} onChange={e => setDiscountRate(e.target.value)} placeholder="10" className="w-full bg-surface border border-border rounded-lg py-2 pl-3 pr-8 text-text font-mono text-sm focus:outline-none focus:border-gold/50 transition-colors" />
                   <span className="absolute right-3 top-2 text-muted text-sm">%</span>
                 </div>
               </div>
+
             </div>
             
-            <button onClick={handleCalculate} disabled={!growthRate || !terminalGrowth || !discountRate} className="w-full mt-6 bg-gold hover:bg-gold/80 text-bg font-display font-bold py-3 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={handleCalculate} disabled={!growthRate || !terminalGrowth || !discountRate} className="w-full mt-6 bg-gold hover:bg-gold/80 text-bg font-display font-bold py-3 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md">
               Calcular Valor Intrínseco
             </button>
           </div>

@@ -51,7 +51,7 @@ def fetch_yahoo_info(symbol: str) -> dict:
     if not _crumb:
         reset_session()
 
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,cashflowStatementHistory,incomeStatementHistory"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
     summary_params = {"modules": modules, "crumb": _crumb, "formatted": "false"}
 
@@ -169,6 +169,9 @@ async def get_company(ticker: str):
         ap = info.get("assetProfile", {})
         pr = info.get("price", {})
         qt = info.get("quoteType", {})
+        
+        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
+        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
 
         name     = extract(pr, "longName") or extract(qt, "longName", "shortName")
         sector   = extract(ap, "sector")
@@ -222,7 +225,36 @@ async def get_company(ticker: str):
         op_cf  = clean(extract(fd, "operatingCashflow"))
         fcf    = clean(extract(fd, "freeCashflow"))
         capex  = -(abs(op_cf - fcf)) if (op_cf and fcf) else None 
-        # =====================================================================
+        
+        # ── NUEVO: CAGR Histórico (Crecimiento de los últimos años) ──
+        fcf_history = []
+        for stmt in cf_list:
+            o_cf = clean(extract(stmt, "totalCashFromOperatingActivities") or extract(stmt, "operatingCashflow"))
+            c_ex = clean(extract(stmt, "capitalExpenditures"))
+            fcf_dir = clean(extract(stmt, "freeCashflow"))
+            
+            if fcf_dir is not None:
+                fcf_history.append(fcf_dir)
+            elif o_cf is not None and c_ex is not None:
+                fcf_history.append(o_cf - abs(c_ex))
+                
+        fcf_cagr = None
+        if len(fcf_history) >= 2 and fcf_history[0] > 0 and fcf_history[-1] > 0:
+            years = len(fcf_history) - 1
+            fcf_cagr = ((fcf_history[0] / fcf_history[-1]) ** (1 / years)) - 1
+            
+        # Plan B Profesional: Beneficio Neto (Net Income)
+        ni_history = []
+        for stmt in inc_list:
+            ni = clean(extract(stmt, "netIncome") or extract(stmt, "netIncomeApplicableToCommonShares"))
+            if ni is not None:
+                ni_history.append(ni)
+                
+        ni_cagr = None
+        if len(ni_history) >= 2 and ni_history[0] > 0 and ni_history[-1] > 0:
+            years = len(ni_history) - 1
+            ni_cagr = ((ni_history[0] / ni_history[-1]) ** (1 / years)) - 1
+        # ─────────────────────────────────────────────────────────────
 
         def ratio(n, d):
             return n / d if (n is not None and d and d != 0) else None
@@ -251,7 +283,7 @@ async def get_company(ticker: str):
                 "price_change":   price_change,
                 "price_pct":      ratio(price_change, prev_close),
                 "market_cap":     market_cap,
-                "shares_outstanding": shares_outstanding, # <--- Dato inyectado acá
+                "shares_outstanding": shares_outstanding,
                 "ev":             ev,
                 "high_52w":       high_52w,
                 "low_52w":        low_52w,
@@ -281,6 +313,7 @@ async def get_company(ticker: str):
                 "net_margin": profit_margin or ratio(net_income, total_rev),
                 "roe":        clean(extract(fd, "returnOnEquity")) or ratio(net_income, equity),
                 "roa":        roa or ratio(net_income, total_assets),
+                "ni_cagr":    ni_cagr,
             },
             "balance_sheet": {
                 "total_assets": total_assets,
@@ -298,6 +331,7 @@ async def get_company(ticker: str):
                 "fcf_yield":   ratio(fcf, market_cap),
                 "fcf_margin":  ratio(fcf, total_rev),
                 "fcf_quality": ratio(fcf, net_income),
+                "fcf_cagr":    fcf_cagr,
             },
         }
 
