@@ -2,10 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import yfinance as yf
 import numpy as np
-import requests
-import requests.adapters
 import math
 import time
 import random
@@ -22,40 +19,24 @@ app.add_middleware(
 
 # ── curl_cffi session (bypasses Yahoo cloud blocks) ───────────────────────────
 from curl_cffi import requests as curl_requests
-# Actualizamos el camuflaje a una versión más reciente
 _curl = curl_requests.Session(impersonate="chrome116")
 print("✅ curl_cffi session ready")
-
-# ── requests session (fallback for search) ────────────────────────────────────
-_session = requests.Session()
-_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-})
 
 # ── caché en memoria ──────────────────────────────────────────────────────────
 COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
-# ❌ ELIMINAMOS YAHOO_HEADERS. Dejamos que curl_cffi ponga los suyos originales.
-
 def get_crumb():
     """Fetch Yahoo crumb token usando fc.yahoo.com SIN romper el camuflaje"""
     try:
-        # 1. Obtenemos la cookie 'A3' permitiendo redirecciones, sin headers manuales
         _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
-        
-        # 2. Pedimos el crumb
         r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
-        
-        # Verificamos que sea un token válido y no una página web de error
         if r.status_code == 200 and r.text and "html" not in r.text.lower():
             return r.text.strip()
-            
     except Exception as e:
         print(f"Error al obtener crumb primario: {e}")
 
-    # 3. Fallback: El método viejo
     try:
         _curl.get("https://finance.yahoo.com", timeout=10, allow_redirects=True)
         r = _curl.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
@@ -68,12 +49,13 @@ def get_crumb():
 _crumb = None
 
 def fetch_yahoo_info(symbol: str) -> dict:
-    """Fetch stock info directly from Yahoo Finance v8 API using curl_cffi."""
+    """Fetch all stock info and statements directly from Yahoo API using curl_cffi."""
     global _crumb
     if not _crumb:
         _crumb = get_crumb()
 
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
+    # Agregamos los módulos de balances financieros a la petición blindada
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
     summary_params = {
         "modules": modules,
@@ -81,11 +63,9 @@ def fetch_yahoo_info(symbol: str) -> dict:
         "formatted": "false",
     }
 
-    # SIN HEADERS MANUALES
     r = _curl.get(summary_url, params=summary_params, timeout=15)
 
     if r.status_code == 401 or r.status_code == 403:
-        # Refresh crumb and retry
         _crumb = get_crumb()
         summary_params["crumb"] = _crumb
         r = _curl.get(summary_url, params=summary_params, timeout=15)
@@ -99,11 +79,7 @@ def fetch_yahoo_info(symbol: str) -> dict:
         error = data.get("quoteSummary", {}).get("error", {})
         raise HTTPException(status_code=404, detail=f"Sin datos para '{symbol}': {error}")
 
-    # Flatten all modules into a single dict
-    info = {}
-    for module in result:
-        info.update(module)
-    return info
+    return result[0]
 
 
 def extract(d, *keys, default=None):
@@ -133,27 +109,6 @@ def clean(val):
         return None
 
 
-def get_recent(df, *fields):
-    if df is None:
-        return None
-    try:
-        if df.empty:
-            return None
-    except Exception:
-        return None
-    for field in fields:
-        if field in df.index:
-            for col in df.columns:
-                try:
-                    v = df.loc[field, col]
-                    c = clean(v)
-                    if c is not None:
-                        return c
-                except Exception:
-                    continue
-    return None
-
-
 def safe_fetch(fn, retries=3, delay=3):
     last_err = None
     for attempt in range(retries):
@@ -165,25 +120,7 @@ def safe_fetch(fn, retries=3, delay=3):
                 time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
     raise last_err
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/api/debug/{ticker}")
-async def debug_ticker(ticker: str):
-    symbol = ticker.upper()
-    try:
-        info = fetch_yahoo_info(symbol)
-        return {
-            "symbol": symbol,
-            "crumb": _crumb,
-            "info_keys": list(info.keys()),
-            "sample": {k: info.get(k) for k in [
-                "longName","regularMarketPrice","marketCap","trailingPE","symbol"
-            ]},
-        }
-    except Exception as e:
-        return {"error": str(e), "crumb": _crumb}
-
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
@@ -217,22 +154,23 @@ async def get_company(ticker: str):
             return COMPANY_CACHE[symbol]["data"]
 
     try:
-        # Fetch info via direct Yahoo API with curl_cffi
         info = safe_fetch(lambda: fetch_yahoo_info(symbol))
 
-        # Financial statements via yfinance
-        t = yf.Ticker(symbol)
-        income  = safe_fetch(lambda: t.income_stmt)
-        balance = safe_fetch(lambda: t.balance_sheet)
-        cf      = safe_fetch(lambda: t.cashflow)
+        fd = info.get("financialData", {})
+        ks = info.get("defaultKeyStatistics", {})
+        sd = info.get("summaryDetail", {})
+        ap = info.get("assetProfile", {})
+        pr = info.get("price", {})
+        qt = info.get("quoteType", {})
 
-        # ── Extract from flattened modules ────────────────────────────────────
-        fd  = info.get("financialData", {})
-        ks  = info.get("defaultKeyStatistics", {})
-        sd  = info.get("summaryDetail", {})
-        ap  = info.get("assetProfile", {})
-        pr  = info.get("price", {})
-        qt  = info.get("quoteType", {})
+        # Listas de balances
+        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
+        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
+        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
+
+        inc = inc_list[0] if inc_list else {}
+        bal = bal_list[0] if bal_list else {}
+        cf  = cf_list[0] if cf_list else {}
 
         name     = extract(pr, "longName") or extract(qt, "longName", "shortName")
         sector   = extract(ap, "sector")
@@ -260,37 +198,26 @@ async def get_company(ticker: str):
         price_change = (price - prev_close) if (price and prev_close) else None
 
         # ── Revenue ───────────────────────────────────────────────────────────
-        total_rev    = get_recent(income, "Total Revenue")
-        op_rev       = get_recent(income, "Operating Revenue") or total_rev
-        other_income = get_recent(income, "Other Income Expense",
-                                  "Non Operating Income", "Total Other Finance Income")
-        gross_profit = get_recent(income, "Gross Profit")
-        op_income    = get_recent(income, "Operating Income", "EBIT")
-        ebitda_raw   = get_recent(income, "EBITDA", "Normalized EBITDA")
-        net_income   = get_recent(income, "Net Income", "Net Income Common Stockholders")
-        da           = get_recent(cf, "Depreciation And Amortization",
-                                  "Depreciation Depletion And Amortization")
-
-        ebitda = ebitda_raw
-        if ebitda is None and op_income is not None and da is not None:
-            ebitda = op_income + abs(da)
+        total_rev    = clean(extract(fd, "totalRevenue") or extract(inc, "totalRevenue"))
+        gross_profit = clean(extract(fd, "grossProfits") or extract(inc, "grossProfit"))
+        op_income    = clean(extract(inc, "operatingIncome"))
+        ebitda       = clean(extract(fd, "ebitda"))
+        net_income   = clean(extract(ks, "netIncomeToCommon") or extract(inc, "netIncome"))
+        da           = clean(extract(cf, "depreciation"))
 
         # ── Balance sheet ─────────────────────────────────────────────────────
-        total_assets = get_recent(balance, "Total Assets")
-        total_liab   = get_recent(balance, "Total Liabilities Net Minority Interest", "Total Liabilities")
-        equity       = get_recent(balance, "Stockholders Equity", "Common Stock Equity",
-                                  "Total Equity Gross Minority Interest")
-        total_debt   = get_recent(balance, "Total Debt", "Long Term Debt And Capital Lease Obligation")
-        cash         = get_recent(balance, "Cash And Cash Equivalents",
-                                  "Cash Cash Equivalents And Short Term Investments",
-                                  "Cash And Cash Equivalents And Short Term Investments")
+        total_assets = clean(extract(bal, "totalAssets"))
+        total_liab   = clean(extract(bal, "totalLiab"))
+        equity       = clean(extract(bal, "totalStockholderEquity"))
+        total_debt   = clean(extract(fd, "totalDebt"))
+        cash         = clean(extract(fd, "totalCash"))
 
         # ── Cash flow ─────────────────────────────────────────────────────────
-        op_cf  = get_recent(cf, "Operating Cash Flow", "Cash Flows From Operations")
-        capex  = get_recent(cf, "Capital Expenditure", "Purchase Of Property Plant And Equipment")
-        fcf    = get_recent(cf, "Free Cash Flow")
+        op_cf  = clean(extract(fd, "operatingCashflow") or extract(cf, "totalCashFromOperatingActivities"))
+        capex  = clean(extract(cf, "capitalExpenditures"))
+        fcf    = clean(extract(fd, "freeCashflow"))
         if fcf is None and op_cf is not None and capex is not None:
-            fcf = op_cf + capex if capex < 0 else op_cf - capex
+            fcf = op_cf - abs(capex)
 
         # ── Ratios ────────────────────────────────────────────────────────────
         def ratio(n, d):
@@ -298,14 +225,18 @@ async def get_company(ticker: str):
                 return n / d
             return None
 
-        gross_margin = ratio(gross_profit, total_rev)
-        op_margin    = ratio(op_income, total_rev)
-        net_margin   = ratio(net_income, total_rev)
-        roe          = ratio(net_income, equity)
-        roa          = ratio(net_income, total_assets)
-        de_ratio     = ratio(total_debt, equity)
+        gross_margin = clean(extract(fd, "grossMargins")) or ratio(gross_profit, total_rev)
+        op_margin    = clean(extract(fd, "operatingMargins")) or ratio(op_income, total_rev)
+        net_margin   = clean(extract(fd, "profitMargins")) or ratio(net_income, total_rev)
+        roe          = clean(extract(fd, "returnOnEquity")) or ratio(net_income, equity)
+        roa          = clean(extract(fd, "returnOnAssets")) or ratio(net_income, total_assets)
+        
+        de_ratio = clean(extract(fd, "debtToEquity"))
+        if de_ratio is not None and de_ratio > 10: # Yahoo a veces manda porcentajes (ej: 150 en vez de 1.5)
+            de_ratio = de_ratio / 100.0
+            
         net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
-        ev           = (market_cap + net_debt) if (market_cap and net_debt is not None) else None
+        ev           = clean(extract(ks, "enterpriseValue")) or (market_cap + net_debt) if (market_cap and net_debt is not None) else None
         ev_ebitda    = ratio(ev, ebitda)
         fcf_yield    = ratio(fcf, market_cap)
         fcf_margin   = ratio(fcf, total_rev)
@@ -342,8 +273,8 @@ async def get_company(ticker: str):
             },
             "revenue": {
                 "total":         total_rev,
-                "recurring":     op_rev,
-                "extraordinary": other_income,
+                "recurring":     None,
+                "extraordinary": None,
                 "gross_profit":  gross_profit,
                 "gross_margin":  gross_margin,
             },
