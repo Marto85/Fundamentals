@@ -95,9 +95,12 @@ def safe_fetch(fn, retries=3, delay=3):
 
 
 def validate_info(info, symbol):
-    # Accept any non-empty dict — missing fields show as — in the frontend
-    if not info or not isinstance(info, dict) or len(info) < 3:
+    # Only reject if info is completely absent
+    if info is None or not isinstance(info, dict):
         raise HTTPException(status_code=404, detail=f"No se encontró '{symbol}'")
+    # Empty dict means Yahoo blocked us silently
+    if len(info) == 0:
+        raise HTTPException(status_code=503, detail=f"Yahoo Finance bloqueó la request para '{symbol}'. Intentá en unos segundos.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +127,27 @@ async def search(q: str = Query(..., min_length=1)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
+@app.get("/api/debug/{ticker}")
+async def debug_ticker(ticker: str):
+    """Temporary debug endpoint - shows raw yfinance response"""
+    import sys
+    symbol = ticker.upper()
+    try:
+        t = get_ticker(symbol)
+        info = safe_fetch(lambda: t.info)
+        return {
+            "symbol": symbol,
+            "curl_cffi_active": _yf_session is not None,
+            "info_type": str(type(info)),
+            "info_len": len(info) if isinstance(info, dict) else -1,
+            "info_keys": list(info.keys())[:20] if isinstance(info, dict) else [],
+            "sample": {k: info.get(k) for k in ["longName","currentPrice","marketCap","regularMarketPrice","symbol"] if info.get(k)},
+        }
+    except Exception as e:
+        return {"error": str(e), "curl_cffi_active": _yf_session is not None}
+
 @app.get("/api/company/{ticker}")
 async def get_company(ticker: str):
     symbol = ticker.upper()
@@ -141,7 +165,9 @@ async def get_company(ticker: str):
         balance = safe_fetch(lambda: t.balance_sheet)
         cf      = safe_fetch(lambda: t.cashflow)
 
-        validate_info(info, symbol)
+        # Log what we got for debugging
+        import sys
+        print(f"INFO keys for {symbol}: {list(info.keys())[:10] if info else 'EMPTY'}", file=sys.stderr)
 
         # ── Revenue ───────────────────────────────────────────────────────────
         total_rev    = get_recent(income, "Total Revenue")
