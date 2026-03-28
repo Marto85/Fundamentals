@@ -17,9 +17,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── curl_cffi session (bypasses Yahoo cloud blocks) ───────────────────────────
+# ── Manejo de Sesión Dinámico (Auto-Sanación) ─────────────────────────────────
 from curl_cffi import requests as curl_requests
-_curl = curl_requests.Session(impersonate="chrome116")
+
+_curl = None
+_crumb = None
+
+def reset_session():
+    """Destruye la sesión sospechosa y crea un navegador 'limpio' con cookies frescas"""
+    global _curl, _crumb
+    print("🔄 Reiniciando sesión blindada con Yahoo...")
+    _curl = curl_requests.Session(impersonate="chrome116")
+    _crumb = ""
+    try:
+        _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
+        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        if r.status_code == 200 and r.text and "html" not in r.text.lower():
+            _crumb = r.text.strip()
+    except Exception as e:
+        print(f"Error al obtener crumb en reinicio: {e}")
+
+# Inicializamos la primera vez que arranca el servidor
+reset_session()
 print("✅ curl_cffi session ready")
 
 # ── caché en memoria ──────────────────────────────────────────────────────────
@@ -27,30 +46,10 @@ COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
-def get_crumb():
-    try:
-        _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
-        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
-        if r.status_code == 200 and r.text and "html" not in r.text.lower():
-            return r.text.strip()
-    except Exception as e:
-        print(f"Error al obtener crumb primario: {e}")
-
-    try:
-        _curl.get("https://finance.yahoo.com", timeout=10, allow_redirects=True)
-        r = _curl.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
-        if r.status_code == 200 and "html" not in r.text.lower():
-            return r.text.strip()
-    except:
-        pass
-    return ""
-
-_crumb = None
-
 def fetch_yahoo_info(symbol: str) -> dict:
     global _crumb
     if not _crumb:
-        _crumb = get_crumb()
+        reset_session()
 
     modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
@@ -58,13 +57,15 @@ def fetch_yahoo_info(symbol: str) -> dict:
 
     r = _curl.get(summary_url, params=summary_params, timeout=15)
 
-    if r.status_code == 401 or r.status_code == 403:
-        _crumb = get_crumb()
+    # Si Yahoo se pone paranoico, destruimos todo y reintentamos
+    if r.status_code in (401, 403, 429):
+        reset_session()
         summary_params["crumb"] = _crumb
         r = _curl.get(summary_url, params=summary_params, timeout=15)
 
+    # Ahora sí pasamos el error REAL al frontend para no volvernos locos
     if r.status_code != 200:
-        raise HTTPException(status_code=404, detail=f"Yahoo devolvió {r.status_code} para '{symbol}'")
+        raise HTTPException(status_code=r.status_code, detail=f"Yahoo bloqueó la petición: Status {r.status_code}")
 
     data = r.json()
     result = data.get("quoteSummary", {}).get("result", [])
@@ -109,61 +110,19 @@ def safe_fetch(fn, retries=3, delay=3):
     raise last_err
 
 # ─────────────────────────────────────────────────────────────────────────────
-# =============================================================================
-# SUPER DEBUG ZONE
-# =============================================================================
 
-@app.get("/api/debug/system")
-async def debug_system():
-    """Diagnóstico de red desde el servidor de Render hacia Yahoo"""
-    try:
-        r_fc = _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
-        fc_status = r_fc.status_code
-        fc_cookies = dict(r_fc.cookies)
-    except Exception as e:
-        fc_status = str(e)
-        fc_cookies = {}
-
-    try:
-        r_crumb = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
-        crumb_status = r_crumb.status_code
-        crumb_text = r_crumb.text
-    except Exception as e:
-        crumb_status = str(e)
-        crumb_text = str(e)
-
-    return {
-        "entorno": os.environ.get("RENDER", "Localhost"),
-        "fc_yahoo_status": fc_status,
-        "cookies_obtenidas": list(fc_cookies.keys()),
-        "crumb_endpoint_status": crumb_status,
-        "crumb_endpoint_response": crumb_text,
-        "variable_crumb_actual": _crumb
-    }
-
-@app.get("/api/debug/ticker/{ticker}")
-async def debug_ticker_deep(ticker: str):
-    """Diagnóstico exacto de qué devuelve Yahoo al pedir una empresa"""
+@app.get("/api/debug/{ticker}")
+async def debug_ticker(ticker: str):
     symbol = ticker.upper()
-    crumb_to_use = _crumb or get_crumb()
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
-    summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    summary_params = {"modules": modules, "crumb": crumb_to_use, "formatted": "false"}
-
     try:
-        r = _curl.get(summary_url, params=summary_params, timeout=15)
+        info = safe_fetch(lambda: fetch_yahoo_info(symbol))
         return {
             "symbol": symbol,
-            "url_consultada": summary_url,
-            "crumb_usado": crumb_to_use,
-            "status_de_yahoo": r.status_code,
-            "headers_de_yahoo": dict(r.headers),
-            "respuesta_cruda_de_yahoo": r.text[:800] if r.text else "VACIO" # Acá veremos si tira Captcha o Error
+            "modules_available": list(info.keys()),
+            "raw_financialData": info.get("financialData", {})
         }
     except Exception as e:
-        return {"error_critico": str(e)}
-
-# =============================================================================
+        return {"error": str(e)}
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
@@ -171,6 +130,12 @@ async def search(q: str = Query(..., min_length=1)):
         url = "https://query2.finance.yahoo.com/v1/finance/search"
         params = {"q": q, "quotesCount": 12, "newsCount": 0, "enableFuzzyQuery": False}
         r = _curl.get(url, params=params, timeout=8)
+        
+        # Auto-sanación para búsquedas
+        if r.status_code in (401, 403, 429):
+            reset_session()
+            r = _curl.get(url, params=params, timeout=8)
+            
         r.raise_for_status()
         data = r.json()
         results = []
@@ -242,12 +207,10 @@ async def get_company(ticker: str):
         roa          = clean(extract(fd, "returnOnAssets"))
         de_ratio_raw = clean(extract(fd, "debtToEquity"))
         
-        # Ingresos y rentabilidad
         op_income  = (total_rev * op_margin) if (total_rev and op_margin) else None
         net_income = clean(extract(ks, "netIncomeToCommon")) or ((total_rev * profit_margin) if (total_rev and profit_margin) else None)
         da         = abs(ebitda - op_income) if (ebitda and op_income) else None
         
-        # Balance General (Despejando de ratios)
         total_debt   = clean(extract(fd, "totalDebt"))
         cash         = clean(extract(fd, "totalCash"))
         
@@ -257,10 +220,9 @@ async def get_company(ticker: str):
         total_assets = (net_income / roa) if (net_income and roa and roa != 0) else None
         total_liab   = (total_assets - equity) if (total_assets and equity) else None
 
-        # Flujo de Caja
         op_cf  = clean(extract(fd, "operatingCashflow"))
         fcf    = clean(extract(fd, "freeCashflow"))
-        capex  = -(abs(op_cf - fcf)) if (op_cf and fcf) else None # Capex suele expresarse en negativo
+        capex  = -(abs(op_cf - fcf)) if (op_cf and fcf) else None 
         # =====================================================================
 
         def ratio(n, d):
@@ -299,7 +261,7 @@ async def get_company(ticker: str):
             },
             "revenue": {
                 "total":         total_rev,
-                "recurring":     total_rev, # Asumimos ingreso principal
+                "recurring":     total_rev,
                 "extraordinary": None,
                 "gross_profit":  gross_profit,
                 "gross_margin":  clean(extract(fd, "grossMargins")) or ratio(gross_profit, total_rev),
@@ -362,9 +324,17 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
             "crumb":    _crumb or "",
         }
         r = _curl.get(url, params=params, timeout=15)
-        r.raise_for_status()
+        
+        # Auto-sanación para gráficos
+        if r.status_code in (401, 403, 429):
+            reset_session()
+            params["crumb"] = _crumb
+            r = _curl.get(url, params=params, timeout=15)
+            
+        if r.status_code != 200:
+            raise HTTPException(status_code=r.status_code, detail=f"Yahoo error chart: {r.status_code}")
+            
         data = r.json()
-
         result = data.get("chart", {}).get("result", [])
         if not result:
             raise HTTPException(status_code=404, detail="No price data found")
