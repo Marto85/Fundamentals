@@ -109,19 +109,61 @@ def safe_fetch(fn, retries=3, delay=3):
     raise last_err
 
 # ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# SUPER DEBUG ZONE
+# =============================================================================
 
-@app.get("/api/debug/{ticker}")
-async def debug_ticker(ticker: str):
-    symbol = ticker.upper()
+@app.get("/api/debug/system")
+async def debug_system():
+    """Diagnóstico de red desde el servidor de Render hacia Yahoo"""
     try:
-        info = safe_fetch(lambda: fetch_yahoo_info(symbol))
+        r_fc = _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
+        fc_status = r_fc.status_code
+        fc_cookies = dict(r_fc.cookies)
+    except Exception as e:
+        fc_status = str(e)
+        fc_cookies = {}
+
+    try:
+        r_crumb = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        crumb_status = r_crumb.status_code
+        crumb_text = r_crumb.text
+    except Exception as e:
+        crumb_status = str(e)
+        crumb_text = str(e)
+
+    return {
+        "entorno": os.environ.get("RENDER", "Localhost"),
+        "fc_yahoo_status": fc_status,
+        "cookies_obtenidas": list(fc_cookies.keys()),
+        "crumb_endpoint_status": crumb_status,
+        "crumb_endpoint_response": crumb_text,
+        "variable_crumb_actual": _crumb
+    }
+
+@app.get("/api/debug/ticker/{ticker}")
+async def debug_ticker_deep(ticker: str):
+    """Diagnóstico exacto de qué devuelve Yahoo al pedir una empresa"""
+    symbol = ticker.upper()
+    crumb_to_use = _crumb or get_crumb()
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
+    summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+    summary_params = {"modules": modules, "crumb": crumb_to_use, "formatted": "false"}
+
+    try:
+        r = _curl.get(summary_url, params=summary_params, timeout=15)
         return {
             "symbol": symbol,
-            "modules_available": list(info.keys()),
-            "raw_financialData": info.get("financialData", {})
+            "url_consultada": summary_url,
+            "crumb_usado": crumb_to_use,
+            "status_de_yahoo": r.status_code,
+            "headers_de_yahoo": dict(r.headers),
+            "respuesta_cruda_de_yahoo": r.text[:800] if r.text else "VACIO" # Acá veremos si tira Captcha o Error
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error_critico": str(e)}
+
+# =============================================================================
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
