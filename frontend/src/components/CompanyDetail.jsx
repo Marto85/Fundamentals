@@ -2,13 +2,12 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, DollarSign, BarChart2,
-  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator
+  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare
 } from 'lucide-react'
 import MetricCard, { SectionHeader } from './MetricCard'
 import CandlestickChart from './CandlestickChart'
 import { fmt, fmtPct, fmtPrice, fmtRatio, colorClass, signPrefix } from './utils'
 
-// ── Interpretation badge ──────────────────────────────────────────────────────
 function Badge({ level, label }) {
   const styles = {
     good:    'bg-emerald/15 text-emerald border-emerald/30',
@@ -17,8 +16,7 @@ function Badge({ level, label }) {
     neutral: 'bg-surface text-muted border-border',
   }
   return (
-    <span className={`inline-block text-[9px] font-display font-semibold uppercase tracking-wider
-                      px-2 py-0.5 rounded-full border ${styles[level] || styles.neutral}`}>
+    <span className={`inline-block text-[9px] font-display font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${styles[level] || styles.neutral}`}>
       {label}
     </span>
   )
@@ -163,13 +161,22 @@ export default function CompanyDetail({ data }) {
               </p>
             )}
             
-            <Link 
-              to={`/dcf/${symbol}`} 
-              className="mt-4 flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-gold/10 text-muted hover:text-gold border border-border hover:border-gold/30 rounded-lg text-xs font-medium transition-all shadow-sm"
-            >
-              <Calculator size={14} />
-              Modelar Valor DCF
-            </Link>
+            {/* NUEVOS BOTONES DE HERRAMIENTAS */}
+            <div className="flex gap-2 mt-4">
+              <Link 
+                to={`/dcf/${symbol}`} 
+                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-gold/10 text-muted hover:text-gold border border-border hover:border-gold/30 rounded-lg text-xs font-medium transition-all shadow-sm"
+              >
+                <Calculator size={14} /> Modelar DCF
+              </Link>
+              <Link 
+                to={`/fscore/${symbol}`} 
+                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-emerald/10 text-muted hover:text-emerald border border-border hover:border-emerald/30 rounded-lg text-xs font-medium transition-all shadow-sm"
+              >
+                <ActivitySquare size={14} /> F-Score
+              </Link>
+            </div>
+
           </div>
         </div>
 

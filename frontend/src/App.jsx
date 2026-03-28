@@ -1,13 +1,13 @@
 import { useState, useCallback, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useLocation } from 'react-router-dom'
-import { BarChart2, Calculator,GitCompare, Loader2, AlertCircle, X, RefreshCw } from 'lucide-react'
+import { BarChart2, GitCompare, Loader2, AlertCircle, X, RefreshCw, Calculator, ActivitySquare } from 'lucide-react'
 import SearchBar from './components/SearchBar'
 import CompanyDetail from './components/CompanyDetail'
 import ComparisonView from './components/ComparisonView'
 import DCFView from './components/DCFView'
+import FScoreView from './components/FScoreView'
 import { API_URL } from './components/utils'
 
-// ── Componente para la Vista Individual ──────────────────────────────────────
 function SingleCompanyView() {
   const { ticker } = useParams()
   const navigate = useNavigate()
@@ -34,7 +34,6 @@ function SingleCompanyView() {
     }
   }, [])
 
-  // Dispara la carga automáticamente cuando cambia el ticker en la URL
   useEffect(() => {
     if (ticker) {
       loadCompany(ticker)
@@ -89,12 +88,10 @@ function SingleCompanyView() {
   return null
 }
 
-// ── Componente Principal con el Layout de la Aplicación ──────────────────────
 function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  // Mantenemos el estado de comparación a nivel superior para que no se pierda al cambiar de pestaña
   const [compareCompanies, setCompareCompanies] = useState([])
   const [loadingTickers, setLoadingTickers]     = useState({})
   const [errorTickers, setErrorTickers]         = useState({})
@@ -123,15 +120,11 @@ function AppLayout() {
     setErrorTickers(p => { const n = {...p}; delete n[ticker]; return n })
   }, [])
 
-  // Para estilizar los botones del header
-  const isCompareTab = location.pathname === '/compare'
-
   return (
     <div className="min-h-screen">
       {/* ── Header ── */}
       <header className="sticky top-0 z-40 bg-bg/80 backdrop-blur-xl border-b border-border/50">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-4">
-          {/* Logo */}
           <Link to="/" className="flex items-center gap-2 mr-2 hover:opacity-80 transition-opacity cursor-pointer">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-gold to-amber-600 flex items-center justify-center">
               <BarChart2 size={14} className="text-white" />
@@ -139,45 +132,49 @@ function AppLayout() {
             <span className="font-display font-bold text-text text-lg glow-gold">Fundamentals</span>
           </Link>
 
-          {/* Tabs */}
-          <nav className="flex gap-1">
+          <nav className="flex gap-1 overflow-x-auto pb-1 sm:pb-0">
             <Link
               to="/"
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all
-                ${!isCompareTab
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
+                ${location.pathname === '/' || location.pathname.startsWith('/company')
                   ? 'bg-gold/15 text-gold border border-gold/25'
                   : 'text-muted hover:text-subtle hover:bg-surface'}`}
             >
-              <BarChart2 size={14} />
-              Análisis Individual
+              <BarChart2 size={14} /> Análisis Individual
             </Link>
             <Link
               to="/compare"
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all
-                ${isCompareTab
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
+                ${location.pathname === '/compare'
                   ? 'bg-gold/15 text-gold border border-gold/25'
                   : 'text-muted hover:text-subtle hover:bg-surface'}`}
             >
-              <GitCompare size={14} />
-              Comparar Empresas
+              <GitCompare size={14} /> Comparar Empresas
             </Link>
-
-            {/* NUEVA PESTAÑA DCF */}
             <button
               onClick={() => navigate('/dcf')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
                 ${location.pathname.startsWith('/dcf')
                   ? 'bg-gold/15 text-gold border border-gold/25'
                   : 'text-muted hover:text-subtle hover:bg-surface'}`}
             >
               <Calculator size={14} /> Calculadora DCF
             </button>
-
+            {/* NUEVA PESTAÑA F-SCORE */}
+            <button
+              onClick={() => navigate('/fscore')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
+                ${location.pathname.startsWith('/fscore')
+                  ? 'bg-gold/15 text-gold border border-gold/25'
+                  : 'text-muted hover:text-subtle hover:bg-surface'}`}
+            >
+              <ActivitySquare size={14} /> F-Score (Salud)
+            </button>
           </nav>
 
-
-          {/* Search (Solo visible en análisis individual) */}
-          {!isCompareTab && (
+          {!location.pathname.startsWith('/compare') && 
+           !location.pathname.startsWith('/dcf') && 
+           !location.pathname.startsWith('/fscore') && (
             <SearchBar
               onSelect={item => navigate(`/company/${item.symbol}`)}
               className="flex-1 max-w-md ml-auto"
@@ -186,11 +183,9 @@ function AppLayout() {
         </div>
       </header>
 
-      {/* ── Main (Contenedor Dinámico) ── */}
+      {/* ── Main ── */}
       <main className="max-w-7xl mx-auto px-4 py-8">
         <Routes>
-          
-          {/* 1. Ruta Inicio (Estado vacío) */}
           <Route path="/" element={
             <div className="flex flex-col items-center justify-center py-32 gap-5 text-center fade-in">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-gold/20 to-amber-800/10
@@ -218,28 +213,22 @@ function AppLayout() {
             </div>
           } />
 
-          {/* 2. Ruta Análisis Individual de Empresa */}
           <Route path="/company/:ticker" element={<SingleCompanyView />} />
-
-          {/* 3. Ruta Comparación */}
+          
           <Route path="/compare" element={
-            <ComparisonView
-              companies={compareCompanies}
-              loadingTickers={loadingTickers}
-              errors={errorTickers}
-              onAdd={addCompany}
-              onRemove={removeCompany}
-            />
+            <ComparisonView companies={compareCompanies} loadingTickers={loadingTickers} errors={errorTickers} onAdd={addCompany} onRemove={removeCompany} />
           } />
 
-          {/* Nuevas rutas de la calculadora */}
           <Route path="/dcf" element={<DCFView />} />
           <Route path="/dcf/:ticker" element={<DCFView />} />
+          
+          {/* NUEVAS RUTAS F-SCORE */}
+          <Route path="/fscore" element={<FScoreView />} />
+          <Route path="/fscore/:ticker" element={<FScoreView />} />
 
         </Routes>
       </main>
 
-      {/* Footer */}
       <footer className="border-t border-border/30 mt-16 py-6 text-center">
         <p className="text-muted text-xs font-mono">
           Datos via Yahoo Finance · Solo fines informativos · No constituye asesoramiento financiero
@@ -249,7 +238,6 @@ function AppLayout() {
   )
 }
 
-// ── Punto de Entrada ─────────────────────────────────────────────────────────
 export default function App() {
   return (
     <BrowserRouter>
