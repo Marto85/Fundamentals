@@ -28,7 +28,6 @@ CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
 def get_crumb():
-    """Fetch Yahoo crumb token usando fc.yahoo.com SIN romper el camuflaje"""
     try:
         _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
         r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
@@ -49,19 +48,13 @@ def get_crumb():
 _crumb = None
 
 def fetch_yahoo_info(symbol: str) -> dict:
-    """Fetch all stock info and statements directly from Yahoo API using curl_cffi."""
     global _crumb
     if not _crumb:
         _crumb = get_crumb()
 
-    # Mantenemos solo los módulos que sabemos que NO rompen la API
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    summary_params = {
-        "modules": modules,
-        "crumb": _crumb,
-        "formatted": "false",
-    }
+    summary_params = {"modules": modules, "crumb": _crumb, "formatted": "false"}
 
     r = _curl.get(summary_url, params=summary_params, timeout=15)
 
@@ -76,15 +69,13 @@ def fetch_yahoo_info(symbol: str) -> dict:
     data = r.json()
     result = data.get("quoteSummary", {}).get("result", [])
     if not result:
-        error = data.get("quoteSummary", {}).get("error", {})
-        raise HTTPException(status_code=404, detail=f"Sin datos para '{symbol}': {error}")
+        raise HTTPException(status_code=404, detail=f"Sin datos para '{symbol}'")
 
     return result[0]
 
 
 def extract(d, *keys, default=None):
-    if not isinstance(d, dict):
-        return default
+    if not isinstance(d, dict): return default
     for k in keys:
         if k in d:
             val = d[k]
@@ -96,14 +87,11 @@ def extract(d, *keys, default=None):
 
 
 def clean(val):
-    if val is None:
-        return None
-    if isinstance(val, (int,)) and not isinstance(val, bool):
-        return val
+    if val is None: return None
+    if isinstance(val, (int,)) and not isinstance(val, bool): return val
     try:
         f = float(val)
-        if math.isnan(f) or math.isinf(f):
-            return None
+        if math.isnan(f) or math.isinf(f): return None
         return f
     except (TypeError, ValueError):
         return None
@@ -122,30 +110,18 @@ def safe_fetch(fn, retries=3, delay=3):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-# --- NUEVO DEBUG DETALLADO ---
 @app.get("/api/debug/{ticker}")
 async def debug_ticker(ticker: str):
     symbol = ticker.upper()
     try:
         info = safe_fetch(lambda: fetch_yahoo_info(symbol))
-        
-        # Extraemos las listas crudas para ver qué nos manda Yahoo realmente
-        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
-        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
-        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
-        
         return {
             "symbol": symbol,
-            "crumb": _crumb,
             "modules_available": list(info.keys()),
-            "raw_financialData": info.get("financialData", {}),
-            "raw_income_statement": inc_list[0] if inc_list else "VACIO",
-            "raw_balance_sheet": bal_list[0] if bal_list else "VACIO",
-            "raw_cashflow": cf_list[0] if cf_list else "VACIO"
+            "raw_financialData": info.get("financialData", {})
         }
     except Exception as e:
-        return {"error": str(e), "crumb": _crumb}
-
+        return {"error": str(e)}
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
@@ -188,15 +164,6 @@ async def get_company(ticker: str):
         pr = info.get("price", {})
         qt = info.get("quoteType", {})
 
-        # Listas de balances
-        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
-        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
-        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
-
-        inc = inc_list[0] if inc_list else {}
-        bal = bal_list[0] if bal_list else {}
-        cf  = cf_list[0] if cf_list else {}
-
         name     = extract(pr, "longName") or extract(qt, "longName", "shortName")
         sector   = extract(ap, "sector")
         industry = extract(ap, "industry")
@@ -219,55 +186,47 @@ async def get_company(ticker: str):
         ps_ratio     = clean(extract(sd, "priceToSalesTrailing12Months"))
         div_yield    = clean(extract(sd, "dividendYield") or extract(sd, "trailingAnnualDividendYield"))
         beta         = clean(extract(sd, "beta") or extract(ks, "beta"))
-
         price_change = (price - prev_close) if (price and prev_close) else None
 
-        # ── Revenue ───────────────────────────────────────────────────────────
-        total_rev    = clean(extract(fd, "totalRevenue") or extract(inc, "totalRevenue"))
-        gross_profit = clean(extract(fd, "grossProfits") or extract(inc, "grossProfit"))
-        op_income    = clean(extract(inc, "operatingIncome"))
+        # =====================================================================
+        # MAGIA FINANCIERA: Cálculo de datos faltantes mediante ratios
+        # =====================================================================
+        total_rev    = clean(extract(fd, "totalRevenue"))
+        gross_profit = clean(extract(fd, "grossProfits"))
         ebitda       = clean(extract(fd, "ebitda"))
-        net_income   = clean(extract(ks, "netIncomeToCommon") or extract(inc, "netIncome"))
-        da           = clean(extract(cf, "depreciation"))
-
-        # ── Balance sheet ─────────────────────────────────────────────────────
-        total_assets = clean(extract(bal, "totalAssets"))
-        total_liab   = clean(extract(bal, "totalLiab"))
-        equity       = clean(extract(bal, "totalStockholderEquity"))
+        
+        op_margin    = clean(extract(fd, "operatingMargins"))
+        profit_margin= clean(extract(fd, "profitMargins"))
+        roa          = clean(extract(fd, "returnOnAssets"))
+        de_ratio_raw = clean(extract(fd, "debtToEquity"))
+        
+        # Ingresos y rentabilidad
+        op_income  = (total_rev * op_margin) if (total_rev and op_margin) else None
+        net_income = clean(extract(ks, "netIncomeToCommon")) or ((total_rev * profit_margin) if (total_rev and profit_margin) else None)
+        da         = abs(ebitda - op_income) if (ebitda and op_income) else None
+        
+        # Balance General (Despejando de ratios)
         total_debt   = clean(extract(fd, "totalDebt"))
         cash         = clean(extract(fd, "totalCash"))
-
-        # ── Cash flow ─────────────────────────────────────────────────────────
-        op_cf  = clean(extract(fd, "operatingCashflow") or extract(cf, "totalCashFromOperatingActivities"))
-        capex  = clean(extract(cf, "capitalExpenditures"))
-        fcf    = clean(extract(fd, "freeCashflow"))
-        if fcf is None and op_cf is not None and capex is not None:
-            fcf = op_cf - abs(capex)
-
-        # ── Ratios ────────────────────────────────────────────────────────────
-        def ratio(n, d):
-            if n is not None and d and d != 0:
-                return n / d
-            return None
-
-        gross_margin = clean(extract(fd, "grossMargins")) or ratio(gross_profit, total_rev)
-        op_margin    = clean(extract(fd, "operatingMargins")) or ratio(op_income, total_rev)
-        net_margin   = clean(extract(fd, "profitMargins")) or ratio(net_income, total_rev)
-        roe          = clean(extract(fd, "returnOnEquity")) or ratio(net_income, equity)
-        roa          = clean(extract(fd, "returnOnAssets")) or ratio(net_income, total_assets)
         
-        de_ratio = clean(extract(fd, "debtToEquity"))
-        if de_ratio is not None and de_ratio > 10: # Yahoo a veces manda porcentajes (ej: 150 en vez de 1.5)
-            de_ratio = de_ratio / 100.0
-            
+        de_ratio = de_ratio_raw / 100.0 if (de_ratio_raw and de_ratio_raw > 10) else de_ratio_raw
+        equity = (total_debt / de_ratio) if (total_debt and de_ratio and de_ratio > 0) else None
+        
+        total_assets = (net_income / roa) if (net_income and roa and roa != 0) else None
+        total_liab   = (total_assets - equity) if (total_assets and equity) else None
+
+        # Flujo de Caja
+        op_cf  = clean(extract(fd, "operatingCashflow"))
+        fcf    = clean(extract(fd, "freeCashflow"))
+        capex  = -(abs(op_cf - fcf)) if (op_cf and fcf) else None # Capex suele expresarse en negativo
+        # =====================================================================
+
+        def ratio(n, d):
+            return n / d if (n is not None and d and d != 0) else None
+
         net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
         ev           = clean(extract(ks, "enterpriseValue")) or (market_cap + net_debt) if (market_cap and net_debt is not None) else None
-        ev_ebitda    = ratio(ev, ebitda)
-        fcf_yield    = ratio(fcf, market_cap)
-        fcf_margin   = ratio(fcf, total_rev)
-        fcf_quality  = ratio(fcf, net_income)
-        price_pct    = ratio(price_change, prev_close)
-
+        
         final_data = {
             "symbol":      symbol,
             "name":        name,
@@ -281,7 +240,7 @@ async def get_company(ticker: str):
             "market": {
                 "price":          price,
                 "price_change":   price_change,
-                "price_pct":      price_pct,
+                "price_pct":      ratio(price_change, prev_close),
                 "market_cap":     market_cap,
                 "ev":             ev,
                 "high_52w":       high_52w,
@@ -292,26 +251,26 @@ async def get_company(ticker: str):
                 "forward_pe":     forward_pe,
                 "pb_ratio":       pb_ratio,
                 "ps_ratio":       ps_ratio,
-                "ev_ebitda":      ev_ebitda,
+                "ev_ebitda":      ratio(ev, ebitda),
                 "dividend_yield": div_yield,
                 "beta":           beta,
             },
             "revenue": {
                 "total":         total_rev,
-                "recurring":     None,
+                "recurring":     total_rev, # Asumimos ingreso principal
                 "extraordinary": None,
                 "gross_profit":  gross_profit,
-                "gross_margin":  gross_margin,
+                "gross_margin":  clean(extract(fd, "grossMargins")) or ratio(gross_profit, total_rev),
             },
             "profitability": {
                 "ebit":       op_income,
                 "ebitda":     ebitda,
                 "da":         da,
                 "net_income": net_income,
-                "op_margin":  op_margin,
-                "net_margin": net_margin,
-                "roe":        roe,
-                "roa":        roa,
+                "op_margin":  op_margin or ratio(op_income, total_rev),
+                "net_margin": profit_margin or ratio(net_income, total_rev),
+                "roe":        clean(extract(fd, "returnOnEquity")) or ratio(net_income, equity),
+                "roa":        roa or ratio(net_income, total_assets),
             },
             "balance_sheet": {
                 "total_assets": total_assets,
@@ -326,9 +285,9 @@ async def get_company(ticker: str):
                 "operating":   op_cf,
                 "capex":       capex,
                 "fcf":         fcf,
-                "fcf_yield":   fcf_yield,
-                "fcf_margin":  fcf_margin,
-                "fcf_quality": fcf_quality,
+                "fcf_yield":   ratio(fcf, market_cap),
+                "fcf_margin":  ratio(fcf, total_rev),
+                "fcf_quality": ratio(fcf, net_income),
             },
         }
 
@@ -420,8 +379,6 @@ async def compare(tickers: str):
             results.append({"symbol": ticker, "error": str(e)})
     return results
 
-
-# ── Serve React frontend (production build) ───────────────────────────────────
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
 if os.path.exists(STATIC_DIR):
