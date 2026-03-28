@@ -14,7 +14,6 @@ const METRICS = [
   { key: 'market.dividend_yield',     label: 'Div. Yield',           fmt: fmtPct, color: true },
   { sep: true, label: 'INGRESOS' },
   { key: 'revenue.total',             label: 'Ingresos Totales',     fmt: fmt },
-  { key: 'revenue.recurring',         label: 'Ing. Recurrentes',     fmt: fmt },
   { key: 'revenue.gross_profit',      label: 'Ganancia Bruta',       fmt: fmt },
   { key: 'revenue.gross_margin',      label: 'Margen Bruto',         fmt: fmtPct, color: true },
   { sep: true, label: 'RENTABILIDAD' },

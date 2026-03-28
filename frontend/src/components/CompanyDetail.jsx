@@ -342,12 +342,7 @@ export default function CompanyDetail({ data }) {
       <div>
         <SectionHeader title="Ingresos" icon={DollarSign} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-          <MetricCard label="Ingresos Totales"      value={fmt(revenue.total)}       sub={currency} tooltip="Últimos resultados anuales" />
-          <MetricCard label="Ingresos Recurrentes"  value={fmt(revenue.recurring)}   sub="Ingresos operativos"
-                      color="text-sky" tooltip="Ingresos provenientes de la operación principal" />
-          <MetricCard label="Ingresos Ext. / No Rec." value={fmt(revenue.extraordinary)}
-                      color={revenue.extraordinary ? colorClass(revenue.extraordinary) : undefined}
-                      sub="Otros ingresos / gastos" tooltip="Partidas no operativas, extraordinarias o financieras" />
+          <MetricCard label="Ingresos Totales"      value={fmt(revenue.total)}       sub={currency} tooltip="Últimos resultados anuales (TTM)" />
           <MetricCard label="Ganancia Bruta"        value={fmt(revenue.gross_profit)}
                       sub={`Margen: ${fmtPct(revenue.gross_margin)}`}
                       color="text-emerald" tooltip="Ingresos – Costo de ventas" />
