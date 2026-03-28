@@ -45,8 +45,7 @@ CACHE_EXPIRE = 3600
 
 
 def get_ticker(symbol: str):
-    if _yf_session is not None:
-        return yf.Ticker(symbol, session=_yf_session)
+    # curl_cffi installed = yfinance uses it automatically. Don't pass session explicitly.
     return yf.Ticker(symbol)
 
 
