@@ -54,8 +54,8 @@ def fetch_yahoo_info(symbol: str) -> dict:
     if not _crumb:
         _crumb = get_crumb()
 
-    # Agregamos los módulos de balances financieros a la petición blindada
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
+    # AGREGADO: Pedimos también los balances Trimestrales (Quarterly) por si los Anuales están vacíos
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,incomeStatementHistoryQuarterly,balanceSheetHistory,balanceSheetHistoryQuarterly,cashflowStatementHistory,cashflowStatementHistoryQuarterly"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
     summary_params = {
         "modules": modules,
@@ -163,10 +163,10 @@ async def get_company(ticker: str):
         pr = info.get("price", {})
         qt = info.get("quoteType", {})
 
-        # Listas de balances
-        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
-        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
-        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
+        # CORRECCIÓN: Si el balance Anual está vacío, buscamos el Trimestral
+        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", []) or info.get("incomeStatementHistoryQuarterly", {}).get("incomeStatementHistory", [])
+        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", []) or info.get("balanceSheetHistoryQuarterly", {}).get("balanceSheetStatements", [])
+        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", []) or info.get("cashflowStatementHistoryQuarterly", {}).get("cashflowStatements", [])
 
         inc = inc_list[0] if inc_list else {}
         bal = bal_list[0] if bal_list else {}
@@ -197,22 +197,25 @@ async def get_company(ticker: str):
 
         price_change = (price - prev_close) if (price and prev_close) else None
 
-        # ── Revenue ───────────────────────────────────────────────────────────
+        # ── Revenue CORREGIDO ─────────────────────────────────────────────────
         total_rev    = clean(extract(fd, "totalRevenue") or extract(inc, "totalRevenue"))
+        op_rev       = clean(extract(inc, "operatingIncome") or extract(inc, "totalOperatingIncome") or total_rev)
+        other_income = clean(extract(inc, "totalOtherIncomeExpenseNet") or extract(inc, "otherIncomeExpense"))
+        
         gross_profit = clean(extract(fd, "grossProfits") or extract(inc, "grossProfit"))
-        op_income    = clean(extract(inc, "operatingIncome"))
+        op_income    = clean(extract(inc, "operatingIncome") or extract(inc, "ebit"))
         ebitda       = clean(extract(fd, "ebitda"))
         net_income   = clean(extract(ks, "netIncomeToCommon") or extract(inc, "netIncome"))
-        da           = clean(extract(cf, "depreciation"))
+        da           = clean(extract(cf, "depreciation") or extract(inc, "depreciationAndAmortization"))
 
-        # ── Balance sheet ─────────────────────────────────────────────────────
+        # ── Balance sheet CORREGIDO ───────────────────────────────────────────
         total_assets = clean(extract(bal, "totalAssets"))
-        total_liab   = clean(extract(bal, "totalLiab"))
-        equity       = clean(extract(bal, "totalStockholderEquity"))
+        total_liab   = clean(extract(bal, "totalLiab") or extract(bal, "totalLiabilities"))
+        equity       = clean(extract(bal, "totalStockholderEquity") or extract(bal, "stockholdersEquity"))
         total_debt   = clean(extract(fd, "totalDebt"))
         cash         = clean(extract(fd, "totalCash"))
 
-        # ── Cash flow ─────────────────────────────────────────────────────────
+        # ── Cash flow CORREGIDO ───────────────────────────────────────────────
         op_cf  = clean(extract(fd, "operatingCashflow") or extract(cf, "totalCashFromOperatingActivities"))
         capex  = clean(extract(cf, "capitalExpenditures"))
         fcf    = clean(extract(fd, "freeCashflow"))
@@ -232,7 +235,7 @@ async def get_company(ticker: str):
         roa          = clean(extract(fd, "returnOnAssets")) or ratio(net_income, total_assets)
         
         de_ratio = clean(extract(fd, "debtToEquity"))
-        if de_ratio is not None and de_ratio > 10: # Yahoo a veces manda porcentajes (ej: 150 en vez de 1.5)
+        if de_ratio is not None and de_ratio > 10: 
             de_ratio = de_ratio / 100.0
             
         net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
@@ -273,8 +276,8 @@ async def get_company(ticker: str):
             },
             "revenue": {
                 "total":         total_rev,
-                "recurring":     None,
-                "extraordinary": None,
+                "recurring":     op_rev,
+                "extraordinary": other_income,
                 "gross_profit":  gross_profit,
                 "gross_margin":  gross_margin,
             },
