@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import yfinance as yf
 import numpy as np
 import requests
@@ -7,6 +9,7 @@ import requests.adapters
 import math
 import time
 import random
+import os
 
 app = FastAPI(title="Stock Analyzer API")
 
@@ -17,48 +20,112 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── requests session (solo para /api/search) ──────────────────────────────────
-def make_requests_session():
-    s = requests.Session()
-    s.mount("https://", requests.adapters.HTTPAdapter(max_retries=3))
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.5",
-    })
-    return s
+# ── curl_cffi session (bypasses Yahoo cloud blocks) ───────────────────────────
+from curl_cffi import requests as curl_requests
+_curl = curl_requests.Session(impersonate="chrome110")
+print("✅ curl_cffi session ready")
 
-_requests_session = make_requests_session()
-
-# ── curl_cffi session para yfinance (bypasses Yahoo cloud blocks) ─────────────
-try:
-    from curl_cffi import requests as curl_requests
-    _yf_session = curl_requests.Session(impersonate="chrome110")
-    print("✅ curl_cffi session initialized with chrome110 impersonation")
-except Exception as e:
-    _yf_session = None
-    print(f"⚠️  curl_cffi not available: {e}")
+# ── requests session (fallback for search) ────────────────────────────────────
+_session = requests.Session()
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+})
 
 # ── caché en memoria ──────────────────────────────────────────────────────────
 COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
+YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finance.yahoo.com",
+}
 
-def get_ticker(symbol: str):
-    # curl_cffi installed = yfinance uses it automatically. Don't pass session explicitly.
-    return yf.Ticker(symbol)
+
+def get_crumb():
+    """Fetch Yahoo crumb token using curl_cffi."""
+    r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                  headers=YAHOO_HEADERS, timeout=10)
+    if r.status_code == 200 and r.text and r.text != "null":
+        return r.text.strip()
+    # fallback: visit finance.yahoo.com first
+    _curl.get("https://finance.yahoo.com", headers=YAHOO_HEADERS, timeout=10)
+    r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                  headers=YAHOO_HEADERS, timeout=10)
+    return r.text.strip() if r.status_code == 200 else ""
+
+_crumb = None
+
+def fetch_yahoo_info(symbol: str) -> dict:
+    """Fetch stock info directly from Yahoo Finance v8 API using curl_cffi."""
+    global _crumb
+    if not _crumb:
+        _crumb = get_crumb()
+
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"interval": "1d", "range": "5d"}
+
+    # Also fetch summary
+    summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+    summary_params = {
+        "modules": modules,
+        "crumb": _crumb,
+        "formatted": "false",
+    }
+
+    r = _curl.get(summary_url, params=summary_params, headers=YAHOO_HEADERS, timeout=15)
+
+    if r.status_code == 401 or r.status_code == 403:
+        # Refresh crumb and retry
+        _crumb = get_crumb()
+        summary_params["crumb"] = _crumb
+        r = _curl.get(summary_url, params=summary_params, headers=YAHOO_HEADERS, timeout=15)
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=404, detail=f"Yahoo devolvió {r.status_code} para '{symbol}'")
+
+    data = r.json()
+    result = data.get("quoteSummary", {}).get("result", [])
+    if not result:
+        error = data.get("quoteSummary", {}).get("error", {})
+        raise HTTPException(status_code=404, detail=f"Sin datos para '{symbol}': {error}")
+
+    # Flatten all modules into a single dict
+    info = {}
+    for module in result:
+        info.update(module)
+    return info
+
+
+def extract(d, *keys, default=None):
+    """Extract first found key from nested dict, handling {raw, fmt} format."""
+    if not isinstance(d, dict):
+        return default
+    for k in keys:
+        if k in d:
+            val = d[k]
+            if isinstance(val, dict):
+                val = val.get("raw", val.get("fmt", default))
+            if val is not None and val != "" and val != "N/A":
+                return val
+    return default
 
 
 def clean(val):
     if val is None:
         return None
-    if isinstance(val, (np.integer,)):
-        return int(val)
-    if isinstance(val, (np.floating, float)):
-        if math.isnan(val) or math.isinf(val):
+    if isinstance(val, (int,)) and not isinstance(val, bool):
+        return val
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
             return None
-        return float(val)
-    return val
+        return f
+    except (TypeError, ValueError):
+        return None
 
 
 def get_recent(df, *fields):
@@ -73,9 +140,10 @@ def get_recent(df, *fields):
         if field in df.index:
             for col in df.columns:
                 try:
-                    val = clean(df.loc[field, col])
-                    if val is not None:
-                        return val
+                    v = df.loc[field, col]
+                    c = clean(v)
+                    if c is not None:
+                        return c
                 except Exception:
                     continue
     return None
@@ -93,25 +161,33 @@ def safe_fetch(fn, retries=3, delay=3):
     raise last_err
 
 
-def validate_info(info, symbol):
-    # Only reject if info is completely absent
-    if info is None or not isinstance(info, dict):
-        raise HTTPException(status_code=404, detail=f"No se encontró '{symbol}'")
-    # Empty dict means Yahoo blocked us silently
-    if len(info) == 0:
-        raise HTTPException(status_code=503, detail=f"Yahoo Finance bloqueó la request para '{symbol}'. Intentá en unos segundos.")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/debug/{ticker}")
+async def debug_ticker(ticker: str):
+    symbol = ticker.upper()
+    try:
+        info = fetch_yahoo_info(symbol)
+        return {
+            "symbol": symbol,
+            "crumb": _crumb,
+            "info_keys": list(info.keys()),
+            "sample": {k: info.get(k) for k in [
+                "longName","regularMarketPrice","marketCap","trailingPE","symbol"
+            ]},
+        }
+    except Exception as e:
+        return {"error": str(e), "crumb": _crumb}
+
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
     try:
         url = "https://query2.finance.yahoo.com/v1/finance/search"
         params = {"q": q, "quotesCount": 12, "newsCount": 0, "enableFuzzyQuery": False}
-        resp = _requests_session.get(url, params=params, timeout=8)
-        resp.raise_for_status()
-        data = resp.json()
+        r = _curl.get(url, params=params, headers=YAHOO_HEADERS, timeout=8)
+        r.raise_for_status()
+        data = r.json()
         results = []
         for quote in data.get("quotes", []):
             if quote.get("quoteType") in ("EQUITY", "ETF"):
@@ -126,27 +202,6 @@ async def search(q: str = Query(..., min_length=1)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
-@app.get("/api/debug/{ticker}")
-async def debug_ticker(ticker: str):
-    """Temporary debug endpoint - shows raw yfinance response"""
-    import sys
-    symbol = ticker.upper()
-    try:
-        t = get_ticker(symbol)
-        info = safe_fetch(lambda: t.info)
-        return {
-            "symbol": symbol,
-            "curl_cffi_active": _yf_session is not None,
-            "info_type": str(type(info)),
-            "info_len": len(info) if isinstance(info, dict) else -1,
-            "info_keys": list(info.keys())[:20] if isinstance(info, dict) else [],
-            "sample": {k: info.get(k) for k in ["longName","currentPrice","marketCap","regularMarketPrice","symbol"] if info.get(k)},
-        }
-    except Exception as e:
-        return {"error": str(e), "curl_cffi_active": _yf_session is not None}
-
 @app.get("/api/company/{ticker}")
 async def get_company(ticker: str):
     symbol = ticker.upper()
@@ -157,16 +212,47 @@ async def get_company(ticker: str):
             return COMPANY_CACHE[symbol]["data"]
 
     try:
-        t = get_ticker(symbol)
+        # Fetch info via direct Yahoo API with curl_cffi
+        info = safe_fetch(lambda: fetch_yahoo_info(symbol))
 
-        info    = safe_fetch(lambda: t.info)
+        # Financial statements via yfinance (uses its own session)
+        t = yf.Ticker(symbol)
         income  = safe_fetch(lambda: t.income_stmt)
         balance = safe_fetch(lambda: t.balance_sheet)
         cf      = safe_fetch(lambda: t.cashflow)
 
-        # Log what we got for debugging
-        import sys
-        print(f"INFO keys for {symbol}: {list(info.keys())[:10] if info else 'EMPTY'}", file=sys.stderr)
+        # ── Extract from flattened modules ────────────────────────────────────
+        fd  = info.get("financialData", {})
+        ks  = info.get("defaultKeyStatistics", {})
+        sd  = info.get("summaryDetail", {})
+        ap  = info.get("assetProfile", {})
+        pr  = info.get("price", {})
+        qt  = info.get("quoteType", {})
+
+        name     = extract(pr, "longName") or extract(qt, "longName", "shortName")
+        sector   = extract(ap, "sector")
+        industry = extract(ap, "industry")
+        desc     = (extract(ap, "longBusinessSummary") or "")[:600]
+        exchange = extract(qt, "exchange")
+        currency = extract(pr, "currency") or "USD"
+        website  = extract(ap, "website")
+        employees = clean(extract(ap, "fullTimeEmployees"))
+
+        price        = clean(extract(pr, "regularMarketPrice"))
+        prev_close   = clean(extract(sd, "previousClose", "regularMarketPreviousClose"))
+        market_cap   = clean(extract(pr, "marketCap") or extract(sd, "marketCap"))
+        high_52w     = clean(extract(sd, "fiftyTwoWeekHigh"))
+        low_52w      = clean(extract(sd, "fiftyTwoWeekLow"))
+        avg_50d      = clean(extract(sd, "fiftyDayAverage"))
+        avg_200d     = clean(extract(sd, "twoHundredDayAverage"))
+        pe_ratio     = clean(extract(sd, "trailingPE") or extract(ks, "trailingPE"))
+        forward_pe   = clean(extract(ks, "forwardPE"))
+        pb_ratio     = clean(extract(ks, "priceToBook"))
+        ps_ratio     = clean(extract(sd, "priceToSalesTrailing12Months"))
+        div_yield    = clean(extract(sd, "dividendYield") or extract(sd, "trailingAnnualDividendYield"))
+        beta         = clean(extract(sd, "beta") or extract(ks, "beta"))
+
+        price_change = (price - prev_close) if (price and prev_close) else None
 
         # ── Revenue ───────────────────────────────────────────────────────────
         total_rev    = get_recent(income, "Total Revenue")
@@ -175,11 +261,12 @@ async def get_company(ticker: str):
                                   "Non Operating Income", "Total Other Finance Income")
         gross_profit = get_recent(income, "Gross Profit")
         op_income    = get_recent(income, "Operating Income", "EBIT")
-        ebitda       = get_recent(income, "EBITDA", "Normalized EBITDA")
+        ebitda_raw   = get_recent(income, "EBITDA", "Normalized EBITDA")
         net_income   = get_recent(income, "Net Income", "Net Income Common Stockholders")
         da           = get_recent(cf, "Depreciation And Amortization",
                                   "Depreciation Depletion And Amortization")
 
+        ebitda = ebitda_raw
         if ebitda is None and op_income is not None and da is not None:
             ebitda = op_income + abs(da)
 
@@ -213,46 +300,40 @@ async def get_company(ticker: str):
         roa          = ratio(net_income, total_assets)
         de_ratio     = ratio(total_debt, equity)
         net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
-
-        market_cap  = clean(info.get("marketCap"))
-        ev          = (market_cap + net_debt) if (market_cap and net_debt is not None) else None
-        ev_ebitda   = ratio(ev, ebitda)
-        fcf_yield   = ratio(fcf, market_cap)
-        fcf_margin  = ratio(fcf, total_rev)
-        fcf_quality = ratio(fcf, net_income)
-
-        price        = clean(info.get("currentPrice") or info.get("regularMarketPrice"))
-        prev_close   = clean(info.get("previousClose"))
-        price_change = (price - prev_close) if (price and prev_close) else None
+        ev           = (market_cap + net_debt) if (market_cap and net_debt is not None) else None
+        ev_ebitda    = ratio(ev, ebitda)
+        fcf_yield    = ratio(fcf, market_cap)
+        fcf_margin   = ratio(fcf, total_rev)
+        fcf_quality  = ratio(fcf, net_income)
         price_pct    = ratio(price_change, prev_close)
 
         final_data = {
             "symbol":      symbol,
-            "name":        info.get("longName") or info.get("shortName"),
-            "sector":      info.get("sector"),
-            "industry":    info.get("industry"),
-            "exchange":    info.get("exchange"),
-            "description": (info.get("longBusinessSummary") or "")[:600] or None,
-            "currency":    info.get("currency", "USD"),
-            "website":     info.get("website"),
-            "employees":   clean(info.get("fullTimeEmployees")),
+            "name":        name,
+            "sector":      sector,
+            "industry":    industry,
+            "exchange":    exchange,
+            "description": desc or None,
+            "currency":    currency,
+            "website":     website,
+            "employees":   employees,
             "market": {
                 "price":          price,
                 "price_change":   price_change,
                 "price_pct":      price_pct,
                 "market_cap":     market_cap,
                 "ev":             ev,
-                "high_52w":       clean(info.get("fiftyTwoWeekHigh")),
-                "low_52w":        clean(info.get("fiftyTwoWeekLow")),
-                "avg_50d":        clean(info.get("fiftyDayAverage")),
-                "avg_200d":       clean(info.get("twoHundredDayAverage")),
-                "pe_ratio":       clean(info.get("trailingPE")),
-                "forward_pe":     clean(info.get("forwardPE")),
-                "pb_ratio":       clean(info.get("priceToBook")),
-                "ps_ratio":       clean(info.get("priceToSalesTrailing12Months")),
+                "high_52w":       high_52w,
+                "low_52w":        low_52w,
+                "avg_50d":        avg_50d,
+                "avg_200d":       avg_200d,
+                "pe_ratio":       pe_ratio,
+                "forward_pe":     forward_pe,
+                "pb_ratio":       pb_ratio,
+                "ps_ratio":       ps_ratio,
                 "ev_ebitda":      ev_ebitda,
-                "dividend_yield": clean(info.get("dividendYield")),
-                "beta":           clean(info.get("beta")),
+                "dividend_yield": div_yield,
+                "beta":           beta,
             },
             "revenue": {
                 "total":         total_rev,
@@ -310,22 +391,50 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
             return CHART_CACHE[cache_key]["data"]
 
     try:
-        t = get_ticker(symbol)
-        hist = safe_fetch(lambda: t.history(period=period, interval=interval))
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        range_map = {"1mo":"1mo","3mo":"3mo","6mo":"6mo","1y":"1y","2y":"2y","5y":"5y"}
+        interval_map = {"1d":"1d","1wk":"1wk"}
+        params = {
+            "interval": interval_map.get(interval, "1d"),
+            "range":    range_map.get(period, "1y"),
+            "crumb":    _crumb or "",
+        }
+        r = _curl.get(url, params=params, headers=YAHOO_HEADERS, timeout=15)
+        r.raise_for_status()
+        data = r.json()
 
-        if hist is None or hist.empty:
+        result = data.get("chart", {}).get("result", [])
+        if not result:
             raise HTTPException(status_code=404, detail="No price data found")
 
+        res       = result[0]
+        timestamps = res.get("timestamp", [])
+        quote     = res.get("indicators", {}).get("quote", [{}])[0]
+        opens     = quote.get("open", [])
+        highs     = quote.get("high", [])
+        lows      = quote.get("low", [])
+        closes    = quote.get("close", [])
+        volumes   = quote.get("volume", [])
+
         candles = []
-        for ts, row in hist.iterrows():
-            candles.append({
-                "time":   ts.strftime("%Y-%m-%d"),
-                "open":   round(float(row["Open"]),  4),
-                "high":   round(float(row["High"]),  4),
-                "low":    round(float(row["Low"]),   4),
-                "close":  round(float(row["Close"]), 4),
-                "volume": int(row["Volume"]),
-            })
+        for i, ts in enumerate(timestamps):
+            try:
+                o = opens[i]; h = highs[i]; l = lows[i]; c = closes[i]; v = volumes[i]
+                if None in (o, h, l, c):
+                    continue
+                candles.append({
+                    "time":   time.strftime("%Y-%m-%d", time.gmtime(ts)),
+                    "open":   round(float(o), 4),
+                    "high":   round(float(h), 4),
+                    "low":    round(float(l), 4),
+                    "close":  round(float(c), 4),
+                    "volume": int(v) if v else 0,
+                })
+            except Exception:
+                continue
+
+        if not candles:
+            raise HTTPException(status_code=404, detail="No candle data found")
 
         final_data = {"ticker": symbol, "candles": candles}
         CHART_CACHE[cache_key] = {"timestamp": now, "data": final_data}
@@ -345,17 +454,13 @@ async def compare(tickers: str):
         try:
             data = await get_company(ticker)
             results.append(data)
-            time.sleep(1)
+            time.sleep(0.5)
         except Exception as e:
             results.append({"symbol": ticker, "error": str(e)})
     return results
 
 
 # ── Serve React frontend (production build) ───────────────────────────────────
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
-
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
 if os.path.exists(STATIC_DIR):
@@ -363,5 +468,4 @@ if os.path.exists(STATIC_DIR):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
-        index = os.path.join(STATIC_DIR, "index.html")
-        return FileResponse(index)
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
