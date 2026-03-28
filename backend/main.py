@@ -45,16 +45,27 @@ YAHOO_HEADERS = {
 
 
 def get_crumb():
-    """Fetch Yahoo crumb token using curl_cffi."""
-    r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
-                  headers=YAHOO_HEADERS, timeout=10)
-    if r.status_code == 200 and r.text and r.text != "null":
-        return r.text.strip()
-    # fallback: visit finance.yahoo.com first
-    _curl.get("https://finance.yahoo.com", headers=YAHOO_HEADERS, timeout=10)
-    r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
-                  headers=YAHOO_HEADERS, timeout=10)
-    return r.text.strip() if r.status_code == 200 else ""
+    """Fetch Yahoo crumb token usando el truco de fc.yahoo.com"""
+    try:
+        # 1. Visitar la URL de cookies de Yahoo (suele devolver 404 o 302, pero te instala la cookie 'A3' obligatoria)
+        _curl.get("https://fc.yahoo.com", headers=YAHOO_HEADERS, timeout=10, allow_redirects=True)
+        
+        # 2. Ahora sí, con la cookie en mano, pedimos el crumb
+        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", headers=YAHOO_HEADERS, timeout=10)
+        
+        if r.status_code == 200 and r.text and r.text != "null":
+            return r.text.strip()
+            
+    except Exception as e:
+        print(f"Error al obtener crumb primario: {e}")
+
+    # 3. Fallback: El método viejo por si el nuevo falla
+    try:
+        _curl.get("https://finance.yahoo.com", headers=YAHOO_HEADERS, timeout=10, allow_redirects=True)
+        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", headers=YAHOO_HEADERS, timeout=10)
+        return r.text.strip() if r.status_code == 200 else ""
+    except:
+        return ""
 
 _crumb = None
 
