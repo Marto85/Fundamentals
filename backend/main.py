@@ -54,8 +54,8 @@ def fetch_yahoo_info(symbol: str) -> dict:
     if not _crumb:
         _crumb = get_crumb()
 
-    # AGREGADO: Pedimos también los balances Trimestrales (Quarterly) por si los Anuales están vacíos
-    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,incomeStatementHistoryQuarterly,balanceSheetHistory,balanceSheetHistoryQuarterly,cashflowStatementHistory,cashflowStatementHistoryQuarterly"
+    # VOLVEMOS A LOS MÓDULOS SEGUROS QUE SÍ FUNCIONABAN (Sin los trimestrales)
+    modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
     summary_params = {
         "modules": modules,
@@ -163,10 +163,9 @@ async def get_company(ticker: str):
         pr = info.get("price", {})
         qt = info.get("quoteType", {})
 
-        # CORRECCIÓN: Si el balance Anual está vacío, buscamos el Trimestral
-        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", []) or info.get("incomeStatementHistoryQuarterly", {}).get("incomeStatementHistory", [])
-        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", []) or info.get("balanceSheetHistoryQuarterly", {}).get("balanceSheetStatements", [])
-        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", []) or info.get("cashflowStatementHistoryQuarterly", {}).get("cashflowStatements", [])
+        inc_list = info.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
+        bal_list = info.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
+        cf_list  = info.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
 
         inc = inc_list[0] if inc_list else {}
         bal = bal_list[0] if bal_list else {}
@@ -197,7 +196,7 @@ async def get_company(ticker: str):
 
         price_change = (price - prev_close) if (price and prev_close) else None
 
-        # ── Revenue CORREGIDO ─────────────────────────────────────────────────
+        # ── Revenue MEJORADO (Agregados los que daban None) ───────────────────
         total_rev    = clean(extract(fd, "totalRevenue") or extract(inc, "totalRevenue"))
         op_rev       = clean(extract(inc, "operatingIncome") or extract(inc, "totalOperatingIncome") or total_rev)
         other_income = clean(extract(inc, "totalOtherIncomeExpenseNet") or extract(inc, "otherIncomeExpense"))
@@ -208,14 +207,14 @@ async def get_company(ticker: str):
         net_income   = clean(extract(ks, "netIncomeToCommon") or extract(inc, "netIncome"))
         da           = clean(extract(cf, "depreciation") or extract(inc, "depreciationAndAmortization"))
 
-        # ── Balance sheet CORREGIDO ───────────────────────────────────────────
+        # ── Balance sheet MEJORADO (Agregados sinónimos de Yahoo) ─────────────
         total_assets = clean(extract(bal, "totalAssets"))
         total_liab   = clean(extract(bal, "totalLiab") or extract(bal, "totalLiabilities"))
-        equity       = clean(extract(bal, "totalStockholderEquity") or extract(bal, "stockholdersEquity"))
+        equity       = clean(extract(bal, "totalStockholderEquity") or extract(bal, "stockholdersEquity") or extract(bal, "totalEquity"))
         total_debt   = clean(extract(fd, "totalDebt"))
         cash         = clean(extract(fd, "totalCash"))
 
-        # ── Cash flow CORREGIDO ───────────────────────────────────────────────
+        # ── Cash flow MEJORADO ────────────────────────────────────────────────
         op_cf  = clean(extract(fd, "operatingCashflow") or extract(cf, "totalCashFromOperatingActivities"))
         capex  = clean(extract(cf, "capitalExpenditures"))
         fcf    = clean(extract(fd, "freeCashflow"))
