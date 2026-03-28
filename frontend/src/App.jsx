@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useLocation } from 'react-router-dom'
-import { BarChart2, GitCompare, Loader2, AlertCircle, X, RefreshCw } from 'lucide-react'
+import { BarChart2, Calculator,GitCompare, Loader2, AlertCircle, X, RefreshCw } from 'lucide-react'
 import SearchBar from './components/SearchBar'
 import CompanyDetail from './components/CompanyDetail'
 import ComparisonView from './components/ComparisonView'
+import DCFView from './components/DCFView'
 import { API_URL } from './components/utils'
 
 // ── Componente para la Vista Individual ──────────────────────────────────────
@@ -160,7 +161,20 @@ function AppLayout() {
               <GitCompare size={14} />
               Comparar Empresas
             </Link>
+
+            {/* NUEVA PESTAÑA DCF */}
+            <button
+              onClick={() => navigate('/dcf')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all
+                ${location.pathname.startsWith('/dcf')
+                  ? 'bg-gold/15 text-gold border border-gold/25'
+                  : 'text-muted hover:text-subtle hover:bg-surface'}`}
+            >
+              <Calculator size={14} /> Calculadora DCF
+            </button>
+
           </nav>
+
 
           {/* Search (Solo visible en análisis individual) */}
           {!isCompareTab && (
@@ -217,6 +231,10 @@ function AppLayout() {
               onRemove={removeCompany}
             />
           } />
+
+          {/* Nuevas rutas de la calculadora */}
+          <Route path="/dcf" element={<DCFView />} />
+          <Route path="/dcf/:ticker" element={<DCFView />} />
 
         </Routes>
       </main>
