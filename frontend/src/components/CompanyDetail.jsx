@@ -2,11 +2,12 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, DollarSign, BarChart2,
-  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare
+  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare, CheckCircle2
 } from 'lucide-react'
 import MetricCard, { SectionHeader } from './MetricCard'
 import CandlestickChart from './CandlestickChart'
-import { fmt, fmtPct, fmtPrice, fmtRatio, colorClass, signPrefix } from './utils'
+import CompanyLogo from './CompanyLogo'
+import { fmt, fmtPct, fmtPrice, fmtRatio, colorClass, signPrefix, formatBigNumber } from './utils'
 
 function Badge({ level, label }) {
   const styles = {
@@ -107,7 +108,7 @@ function ebitdaBadge(ebitda, ev) {
 
 export default function CompanyDetail({ data }) {
   const [descOpen, setDescOpen] = useState(false)
-  const { symbol, name, sector, industry, description, currency,
+  const { symbol, name, sector, industry, description, currency, domain, applied_fx_rate,
           market, revenue, profitability, balance_sheet, cash_flow } = data
 
   const priceUp = (market.price_change ?? 0) >= 0
@@ -125,24 +126,28 @@ export default function CompanyDetail({ data }) {
   return (
     <div className="fade-in space-y-5">
       {/* ── Header ───────────────────────────────────────────── */}
-      <div className="glass rounded-2xl p-6">
+      <div className="glass rounded-2xl p-6 mb-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="font-mono text-sky text-xs font-semibold tracking-widest uppercase">{symbol}</span>
-              {market.exchange && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-surface text-muted border border-border font-mono">
-                  {market.exchange}
-                </span>
-              )}
-              {sector && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-gold/10 text-gold border border-gold/20 font-body">
-                  {sector}
-                </span>
-              )}
+          <div className="flex items-center gap-4">
+            {/* LOGO AGREGADO AQUÍ */}
+            <CompanyLogo domain={domain} ticker={symbol} size={64} className="shrink-0" />
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-mono text-sky text-xs font-semibold tracking-widest uppercase">{symbol}</span>
+                {market.exchange && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-surface text-muted border border-border font-mono">
+                    {market.exchange}
+                  </span>
+                )}
+                {sector && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-gold/10 text-gold border border-gold/20 font-body">
+                    {sector}
+                  </span>
+                )}
+              </div>
+              <h1 className="font-display font-bold text-3xl text-text glow-gold">{name}</h1>
+              {industry && <p className="text-subtle text-sm mt-0.5">{industry}</p>}
             </div>
-            <h1 className="font-display font-bold text-2xl text-text glow-gold">{name}</h1>
-            {industry && <p className="text-subtle text-sm mt-0.5">{industry}</p>}
           </div>
 
           <div className="text-right flex flex-col items-end">
@@ -161,7 +166,6 @@ export default function CompanyDetail({ data }) {
               </p>
             )}
             
-            {/* NUEVOS BOTONES DE HERRAMIENTAS */}
             <div className="flex gap-2 mt-4">
               <Link 
                 to={`/dcf/${symbol}`} 
@@ -178,6 +182,29 @@ export default function CompanyDetail({ data }) {
             </div>
 
           </div>
+        </div>
+
+        {/* MEJORA 1: CARTEL DE ÉXITO DE CONVERSIÓN FX */}
+        {applied_fx_rate && (
+          <div className="mt-5 bg-emerald/10 border border-emerald/30 rounded-xl p-4 flex items-start gap-3 fade-in">
+            <CheckCircle2 className="text-emerald shrink-0 mt-0.5" size={20} />
+            <div>
+              <h4 className="text-emerald font-display font-bold text-sm">Ajuste de Moneda Automático (ADR)</h4>
+              <p className="text-subtle text-xs mt-1 leading-relaxed">
+                El sistema detectó que esta empresa reporta balances en moneda local pero cotiza en <strong>{currency}</strong> en este mercado. 
+                Se aplicó automáticamente un tipo de cambio en tiempo real de <strong>{applied_fx_rate.toFixed(4)}</strong> a todos los flujos de caja y deuda para asegurar un cálculo DCF y ratios contables precisos y comparables.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* MEJORA 2: DATOS DE CAPITALIZACIÓN Y ACCIONES */}
+        <div className="sep mb-4 mt-5"></div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+            <MetricCard label="Market Cap" value={formatBigNumber(market.market_cap)} sub="USD" />
+            <MetricCard label="Acciones en Circ." value={formatBigNumber(market.shares_outstanding, '')} />
+            <MetricCard label="Cotización USD" value={fmtPrice(market.price)} />
+            <MetricCard label="P/E Trailing" value={pe ? pe.toFixed(2) + "x" : "—"} />
         </div>
 
         {description && (

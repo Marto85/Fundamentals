@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ActivitySquare, Loader2, AlertCircle, Search, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
 import SearchBar from './SearchBar'
+import CompanyLogo from './CompanyLogo'
 import { API_URL } from './utils'
 
 function CriterionRow({ title, desc, passed }) {
@@ -42,6 +43,8 @@ export default function FScoreView() {
     if (!data) return null
 
     const pio = data.piotroski
+    
+    // MEJORA F-SCORE BLINDADO: Chequeamos si estamos en fallback de 5 puntos
     const isFallback = pio.is_fallback
     const { score, criteria: c } = pio
     const maxScore = isFallback ? 5 : 9
@@ -67,20 +70,25 @@ export default function FScoreView() {
     return (
       <div className="mt-8 space-y-8 fade-in">
         <div className="flex items-center gap-4">
+          {/* LOGO AGREGADO AQUÍ */}
+          <CompanyLogo domain={data.domain} ticker={data.symbol} size={64} className="shrink-0" />
           <div>
             <span className="font-mono text-sky text-sm font-semibold tracking-widest uppercase">{data.symbol}</span>
-            <h2 className="font-display font-bold text-3xl text-text glow-gold">{data.name}</h2>
+            {/* MEJORA 1: NOMBRE ES LINK A LA EMPRESA */}
+            <Link to={`/company/${data.symbol}`} className="hover:text-gold transition-colors">
+                <h2 className="font-display font-bold text-3xl text-text glow-gold">{data.name}</h2>
+            </Link>
           </div>
         </div>
 
-        {/* ALERTA DE FALLBACK */}
+        {/* ALERTA DE FALLBACK (TTM Health en lugar de Piotroski clasico) */}
         {isFallback && (
-          <div className="bg-gold/10 border border-gold/40 rounded-xl p-4 flex items-start gap-3">
+          <div className="bg-gold/10 border border-gold/40 rounded-xl p-4 flex items-start gap-3 fade-in">
             <AlertTriangle className="text-gold shrink-0 mt-0.5" size={20} />
             <div>
               <h4 className="text-gold font-display font-bold text-sm">Aviso: Modo de Salud Actual (TTM)</h4>
               <p className="text-subtle text-xs mt-1 leading-relaxed">
-                El proveedor de datos bloqueó el acceso al balance del año anterior. En lugar del Piotroski clásico de 9 puntos, hemos generado un <strong>Termómetro de Salud Actual de 5 puntos</strong> evaluando los ratios críticos del año en curso.
+                El proveedor de datos bloqueó el acceso al balance histórico del año anterior. En lugar del Piotroski clásico de 9 puntos (comparativo), hemos generado un <strong>Termómetro de Salud Actual de 5 puntos</strong> evaluando matemáticamente los ratios críticos del año en curso.
               </p>
             </div>
           </div>
@@ -117,7 +125,7 @@ export default function FScoreView() {
           </div>
         </div>
 
-        {/* DESGLOSE (Se adapta si es de 9 o de 5 puntos) */}
+        {/* DESGLOSE (Se adapta dinámicamente si es de 9 o de 5 puntos) */}
         {!isFallback ? (
           <div className="grid md:grid-cols-3 gap-6">
             <div className="space-y-4">
@@ -140,7 +148,8 @@ export default function FScoreView() {
             </div>
           </div>
         ) : (
-          <div className="grid md:grid-cols-2 gap-6">
+          // DESGLOSE ADAPTADO DE 5 PUNTOS (F-Score Fallback)
+          <div className="grid md:grid-cols-2 gap-6 fade-in">
             <div className="space-y-4">
               <h3 className="font-display text-sm uppercase tracking-widest text-muted border-b border-border/50 pb-2">Rentabilidad Actual</h3>
               <CriterionRow title="Rentabilidad Activa (ROA)" desc="La empresa genera utilidades operativas sobre los activos que posee." passed={c.roa_positive} />

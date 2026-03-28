@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Calculator, Loader2, AlertCircle, Search, Settings2, FileText, Info, Grid, CheckCircle2 } from 'lucide-react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { Calculator, Loader2, AlertCircle, Search, Settings2, FileText, Info, Grid } from 'lucide-react'
 import SearchBar from './SearchBar'
+import CompanyLogo from './CompanyLogo'
 import { API_URL, fmtPrice, fmt, fmtPct } from './utils'
 
 function PopoverInfo({ title, content }) {
@@ -104,6 +105,7 @@ export default function DCFView() {
     const shares = data.market?.shares_outstanding
     const fcfCagr = data.cash_flow?.fcf_cagr
     const niCagr = data.profitability?.ni_cagr
+    const fin_currency = data.financialCurrency // BRL en PBR
     
     if (!fcf || fcf <= 0 || !shares) {
       return (
@@ -118,25 +120,16 @@ export default function DCFView() {
     return (
       <div className="mt-8 space-y-6 fade-in">
         <div className="flex items-center gap-4">
+          {/* LOGO AGREGADO AQUÍ */}
+          <CompanyLogo domain={data.domain} ticker={data.symbol} size={64} className="shrink-0" />
           <div>
             <span className="font-mono text-sky text-sm font-semibold tracking-widest uppercase">{data.symbol}</span>
-            <h2 className="font-display font-bold text-3xl text-text glow-gold">{data.name}</h2>
+            {/* MEJORA 1: NOMBRE ES LINK A LA EMPRESA */}
+            <Link to={`/company/${data.symbol}`} className="hover:text-gold transition-colors">
+                <h2 className="font-display font-bold text-3xl text-text glow-gold">{data.name}</h2>
+            </Link>
           </div>
         </div>
-
-        {/* CARTEL DE ÉXITO DE CONVERSIÓN FX */}
-        {data.applied_fx_rate && (
-          <div className="bg-emerald/10 border border-emerald/30 rounded-xl p-4 flex items-start gap-3">
-            <CheckCircle2 className="text-emerald shrink-0 mt-0.5" size={20} />
-            <div>
-              <h4 className="text-emerald font-display font-bold text-sm">Ajuste de Moneda Automático (ADR)</h4>
-              <p className="text-subtle text-xs mt-1 leading-relaxed">
-                El sistema detectó que esta empresa reporta balances en moneda local pero cotiza en <strong>{data.currency}</strong>. 
-                Se aplicó automáticamente un tipo de cambio en tiempo real de <strong>{data.applied_fx_rate.toFixed(4)}</strong> a todos los flujos de caja y deuda para asegurar un cálculo DCF preciso.
-              </p>
-            </div>
-          </div>
-        )}
 
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="glass rounded-2xl p-6 border border-border/50">
@@ -145,11 +138,12 @@ export default function DCFView() {
             </h3>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-subtle mb-1">Free Cash Flow Inicial ({data.currency})</p>
+                {/* Nota de la divisa (BRL si es PBR) */}
+                <p className="text-xs text-subtle mb-1">Free Cash Flow Inicial (Base) ({fin_currency})</p>
                 <p className="font-mono text-lg text-text">{fmtPrice(fcf)}</p>
               </div>
               <div>
-                <p className="text-xs text-subtle mb-1">Deuda Neta Actual ({data.currency})</p>
+                <p className="text-xs text-subtle mb-1">Deuda Neta Actual ({fin_currency})</p>
                 <p className="font-mono text-lg text-text">{fmtPrice(netDebt)}</p>
               </div>
               <div>

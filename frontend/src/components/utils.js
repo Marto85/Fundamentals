@@ -34,3 +34,11 @@ export function signPrefix(val) {
   if (val === null || val === undefined) return ''
   return val >= 0 ? '+' : ''
 }
+
+export function formatBigNumber(num, prefix = '$') {
+  if (num === null || num === undefined) return '—'
+  if (num >= 1e12) return `${prefix}${(num / 1e12).toFixed(2)}T` // Trillones (Trillions en inglés)
+  if (num >= 1e9) return `${prefix}${(num / 1e9).toFixed(2)}B`   // Billones (Billions en inglés)
+  if (num >= 1e6) return `${prefix}${(num / 1e6).toFixed(2)}M`   // Millones
+  return `${prefix}${num.toLocaleString()}`
+}

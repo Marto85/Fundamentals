@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -40,6 +40,25 @@ reset_session()
 COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
+
+# ── DICCIONARIO GLOBAL DE DOMINIOS CONOCIDOS ──
+KNOWN_DOMAINS = {
+    "AAPL": "apple.com", "MSFT": "microsoft.com", "NVDA": "nvidia.com",
+    "AMZN": "amazon.com", "TSLA": "tesla.com", "META": "meta.com",
+    "GOOG": "google.com", "GOOGL": "google.com", "NFLX": "netflix.com",
+    "AMD": "amd.com", "INTC": "intel.com", "MELI": "mercadolibre.com",
+    "NU": "nubank.com.br", "BABA": "alibaba.com", "PAM": "pampa.com",
+    "TGS": "tgs.com.ar", "GGAL": "gfgsa.com", "GAL": "gfgsa.com",
+    "SUPV": "gruposupervielle.com", "BMA": "macro.com.ar",
+    "MACRO": "macro.com.ar", "MU": "micron.com", "TSM": "tsmc.com",
+    "YPF": "ypf.com", "STONE": "stone.com.br", "STNE": "stone.com.br",
+    "PAGS": "pagbank.com.br", "CEPU": "centralpuerto.com",
+    "PBR": "petrobras.com.br", "KO": "coca-colacompany.com",
+    "PEP": "pepsico.com", "JNJ": "jnj.com", "BRK-B": "berkshirehathaway.com",
+    "BRK-A": "berkshirehathaway.com", "V": "visa.com", "MA": "mastercard.com",
+    "WMT": "walmart.com", "DIS": "thewaltdisneycompany.com",
+    "JPM": "jpmorganchase.com"
+}
 
 def fetch_yahoo_info(symbol: str) -> dict:
     global _crumb
@@ -99,6 +118,54 @@ def safe_fetch(fn, retries=3, delay=3):
                 time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
     raise last_err
 
+# ── LA CASCADA DEFINITIVA (CON LAS APIs QUE INVESTIGASTE) ──
+@app.get("/api/logo/{ticker}")
+async def proxy_logo(ticker: str, domain: str = None):
+    ticker_base = ticker.split('.')[0].upper()
+    
+    target_domain = domain if (domain and domain not in ["null", "", "None"]) else KNOWN_DOMAINS.get(ticker_base)
+    
+    apis = []
+    
+    if target_domain:
+        cd = target_domain.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+        apis.extend([
+            # 1. Las nuevas joyas públicas (Reemplazos directos de Clearbit en HD)
+            (f"https://logos.hunter.io/{cd}", 500, False),
+            (f"https://api.companyenrich.com/logo/{cd}", 500, False),
+            # 2. Fivicon (La excelente alternativa que encontraste)
+            (f"https://fivicon.com/api/v1/logos/{cd}", 500, False),
+            # 3. IconHorse (Excelente rascador como respaldo)
+            (f"https://icon.horse/icon/{cd}", 1000, False),
+            # 4. Google V2 (Último recurso de dominios)
+            (f"https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://{cd}&size=128", 1000, False)
+        ])
+        
+    # Agregamos las financieras al final de la fila por si el dominio falla
+    apis.extend([
+        (f"https://financialmodelingprep.com/image-stock/{ticker_base}.png", 3000, False),
+        (f"https://s3-symbol-logo.tradingview.com/{ticker_base.lower()}--big.svg", 300, True)
+    ])
+    
+    for url, min_size, is_svg in apis:
+        try:
+            r = _curl.get(url, allow_redirects=True, timeout=2.5)
+            ctype = r.headers.get("Content-Type", "")
+            
+            if r.status_code == 200 and len(r.content) > min_size:
+                if is_svg:
+                    if b"<svg" in r.content[:100].lower():
+                        return Response(content=r.content, media_type="image/svg+xml")
+                else:
+                    if "image" in ctype:
+                        return Response(content=r.content, media_type=ctype)
+        except Exception:
+            continue
+            
+    # Si todo falló, se muestra el Avatar de la inicial.
+    raise HTTPException(status_code=404, detail="Logo real no encontrado")
+# ────────────────────────────────────────────────────────
+
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
     try:
@@ -111,13 +178,18 @@ async def search(q: str = Query(..., min_length=1)):
         r.raise_for_status()
         data = r.json()
         results = []
+        
         for quote in data.get("quotes", []):
             if quote.get("quoteType") in ("EQUITY", "ETF"):
+                symbol_base = quote.get("symbol").split('.')[0].upper()
+                guessed_domain = KNOWN_DOMAINS.get(symbol_base, None)
+
                 results.append({
                     "symbol":   quote.get("symbol"),
                     "name":     quote.get("longname") or quote.get("shortname", ""),
                     "exchange": quote.get("exchange", ""),
                     "type":     quote.get("quoteType"),
+                    "domain":   guessed_domain 
                 })
         return results
     except Exception as e:
@@ -152,7 +224,7 @@ async def get_company(ticker: str):
         desc     = (extract(ap, "longBusinessSummary") or "")[:600]
         exchange = extract(qt, "exchange")
         currency = extract(pr, "currency") or "USD"
-        fin_currency = extract(fd, "financialCurrency") or currency
+        fin_currency = extract(fd, "financialCurrency") or currency 
         website  = extract(ap, "website")
         employees = clean(extract(ap, "fullTimeEmployees"))
 
@@ -189,7 +261,6 @@ async def get_company(ticker: str):
         
         de_ratio = de_ratio_raw / 100.0 if (de_ratio_raw and de_ratio_raw > 10) else de_ratio_raw
         equity = (total_debt / de_ratio) if (total_debt and de_ratio and de_ratio > 0) else None
-        
         total_assets = (net_income / roa) if (net_income and roa and roa != 0) else None
         total_liab   = (total_assets - equity) if (total_assets and equity) else None
 
@@ -223,10 +294,9 @@ async def get_company(ticker: str):
             years = len(ni_history) - 1
             ni_cagr = ((ni_history[0] / ni_history[-1]) ** (1 / years)) - 1
 
-        # ── MAGIA 1: CONVERSIÓN DE DIVISAS PARA ADRs (Ej: PBR BRL -> USD) ──
         applied_fx_rate = None
         if currency and fin_currency and currency != fin_currency:
-            fx_pair = f"{fin_currency}{currency}=X"
+            fx_pair = f"{fin_currency}{currency}=X" 
             try:
                 r_fx = _curl.get(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{fx_pair}", 
                                  params={"modules": "price", "crumb": _crumb}, timeout=5)
@@ -236,7 +306,6 @@ async def get_company(ticker: str):
                         rate = clean(extract(fx_res[0].get("price", {}), "regularMarketPrice"))
                         if rate:
                             applied_fx_rate = rate
-                            # Multiplicamos TODOS los valores contables absolutos por el tipo de cambio
                             total_rev = total_rev * rate if total_rev else None
                             gross_profit = gross_profit * rate if gross_profit else None
                             ebitda = ebitda * rate if ebitda else None
@@ -251,17 +320,9 @@ async def get_company(ticker: str):
                             op_cf = op_cf * rate if op_cf else None
                             fcf = fcf * rate if fcf else None
                             capex = capex * rate if capex else None
-                            
-                            # Recalculamos EV y Deuda Neta con los valores ya en USD
-                            net_debt = (total_debt - cash) if (total_debt is not None and cash is not None) else None
-                            ev = clean(extract(ks, "enterpriseValue"))
-                            if not ev and market_cap and net_debt is not None: 
-                                ev = market_cap + net_debt
             except Exception as e:
                 pass
-        # ─────────────────────────────────────────────────────────────
 
-        # ── MAGIA 2: ALGORITMO PIOTROSKI Y FALLBACK DE 5 PUNTOS ──
         piotroski = {"score": 0, "is_valid": False, "is_fallback": False, "criteria": {}}
         
         bs0_temp = bs_list[0] if len(bs_list) > 0 else {}
@@ -277,60 +338,59 @@ async def get_company(ticker: str):
                 bs0, bs1 = bs_list[0], bs_list[1]
 
                 ni0 = clean(extract(inc0, "netIncome", "netIncomeApplicableToCommonShares")) or net_income
-                assets0 = clean(extract(bs0, "totalAssets", "assets")) or total_assets
-                assets1 = clean(extract(bs1, "totalAssets", "assets"))
-                
-                # Verificamos si Yahoo mandó los datos reales
-                if assets0 is not None and assets1 is not None:
-                    lt_debt0 = clean(extract(bs0, "longTermDebt", "totalLongTermDebt")) or total_debt or 0
-                    gross0 = clean(extract(inc0, "grossProfit", "grossProfits")) or gross_profit
-                    rev0 = clean(extract(inc0, "totalRevenue", "operatingRevenue")) or total_rev
+                assets0 = clean(extract(bs0, "totalAssets", "assets"))
 
-                    ni1 = clean(extract(inc1, "netIncome", "netIncomeApplicableToCommonShares"))
+                if assets0 is not None:
+                    assets1 = clean(extract(bs1, "totalAssets", "assets"))
                     lt_debt1 = clean(extract(bs1, "longTermDebt", "totalLongTermDebt")) or 0
                     cr_ast1 = clean(extract(bs1, "totalCurrentAssets", "currentAssets"))
                     cr_liab1 = clean(extract(bs1, "totalCurrentLiabilities", "currentLiabilities"))
                     gross1 = clean(extract(inc1, "grossProfit", "grossProfits"))
                     rev1 = clean(extract(inc1, "totalRevenue", "operatingRevenue"))
 
-                    roa0 = (ni0 / assets0) if (ni0 is not None and assets0) else None
-                    roa1 = (ni1 / assets1) if (ni1 is not None and assets1) else None
-                    c1 = roa0 is not None and roa0 > 0
-                    c2 = cfo0_temp is not None and cfo0_temp > 0
-                    c3 = roa0 is not None and roa1 is not None and roa0 > roa1
-                    c4 = cfo0_temp is not None and ni0 is not None and cfo0_temp > ni0
+                    if assets1 is not None and lt_debt1 is not None:
+                        lt_debt0 = clean(extract(bs0, "longTermDebt", "totalLongTermDebt")) or total_debt or 0
+                        gross0 = clean(extract(inc0, "grossProfit", "grossProfits")) or gross_profit
+                        rev0 = clean(extract(inc0, "totalRevenue", "operatingRevenue")) or total_rev
+                        ni1 = clean(extract(inc1, "netIncome", "netIncomeApplicableToCommonShares"))
 
-                    lev0 = (lt_debt0 / assets0) if (lt_debt0 is not None and assets0) else None
-                    lev1 = (lt_debt1 / assets1) if (assets1) else None
-                    c5 = lev0 is not None and lev1 is not None and lev0 <= lev1
+                        roa0 = (ni0 / assets0) if (ni0 is not None and assets0) else None
+                        roa1 = (ni1 / assets1) if (ni1 is not None and assets1) else None
+                        c1 = roa0 is not None and roa0 > 0
+                        c2 = cfo0_temp is not None and cfo0_temp > 0
+                        c3 = roa0 is not None and roa1 is not None and roa0 > roa1
+                        c4 = cfo0_temp is not None and ni0 is not None and cfo0_temp > ni0
 
-                    cr0 = (cr_ast0 / cr_liab0) if (cr_ast0 is not None and cr_liab0) else None
-                    cr1 = (cr_ast1 / cr_liab1) if (cr_ast1 is not None and cr_liab1) else None
-                    c6 = cr0 is not None and cr1 is not None and cr0 > cr1
+                        lev0 = (lt_debt0 / assets0) if (lt_debt0 is not None and assets0) else None
+                        lev1 = (lt_debt1 / assets1) if (assets1) else None
+                        c5 = lev0 is not None and lev1 is not None and lev0 <= lev1
 
-                    issued_stock = clean(extract(cf0, "issuanceOfStock", "issuanceOfCapitalStock")) or 0
-                    c7 = issued_stock <= 0
+                        cr0 = (cr_ast0 / cr_liab0) if (cr_ast0 is not None and cr_liab0) else None
+                        cr1 = (cr_ast1 / cr_liab1) if (cr_ast1 is not None and cr_liab1) else None
+                        c6 = cr0 is not None and cr1 is not None and cr0 > cr1
 
-                    gm0 = (gross0 / rev0) if (gross0 is not None and rev0) else None
-                    gm1 = (gross1 / rev1) if (gross1 is not None and rev1) else None
-                    c8 = gm0 is not None and gm1 is not None and gm0 > gm1
+                        issued_stock = clean(extract(cf0, "issuanceOfStock", "issuanceOfCapitalStock")) or 0
+                        c7 = issued_stock <= 0
 
-                    turn0 = (rev0 / assets0) if (rev0 is not None and assets0) else None
-                    turn1 = (rev1 / assets1) if (rev1 is not None and assets1) else None
-                    c9 = turn0 is not None and turn1 is not None and turn0 > turn1
+                        gm0 = (gross0 / rev0) if (gross0 is not None and rev0) else None
+                        gm1 = (gross1 / rev1) if (gross1 is not None and rev1) else None
+                        c8 = gm0 is not None and gm1 is not None and gm0 > gm1
 
-                    checks = [c1, c2, c3, c4, c5, c6, c7, c8, c9]
-                    piotroski["score"] = sum(1 for c in checks if c)
-                    piotroski["is_valid"] = True
-                    piotroski["criteria"] = {
-                        "roa_positive": c1, "cfo_positive": c2, "roa_increasing": c3, "cfo_gt_ni": c4,
-                        "leverage_decreasing": c5, "current_ratio_increasing": c6, "no_new_shares": c7,
-                        "gross_margin_increasing": c8, "asset_turnover_increasing": c9
-                    }
+                        turn0 = (rev0 / assets0) if (rev0 is not None and assets0) else None
+                        turn1 = (rev1 / assets1) if (rev1 is not None and assets1) else None
+                        c9 = turn0 is not None and turn1 is not None and turn0 > turn1
+
+                        checks = [c1, c2, c3, c4, c5, c6, c7, c8, c9]
+                        piotroski["score"] = sum(1 for c in checks if c)
+                        piotroski["is_valid"] = True
+                        piotroski["criteria"] = {
+                            "roa_positive": c1, "cfo_positive": c2, "roa_increasing": c3, "cfo_gt_ni": c4,
+                            "leverage_decreasing": c5, "current_ratio_increasing": c6, "no_new_shares": c7,
+                            "gross_margin_increasing": c8, "asset_turnover_increasing": c9
+                        }
         except Exception:
             pass
 
-        # Fallback de Salud Actual (5 puntos) para AAPL, MSFT, etc.
         if not piotroski["is_valid"]:
             h1 = roa is not None and roa > 0
             h2 = fcf is not None and fcf > 0
@@ -352,19 +412,21 @@ async def get_company(ticker: str):
                     "liquid": h5
                 }
             }
-        # ─────────────────────────────────────────────────────────────
 
         def ratio(n, d):
             return n / d if (n is not None and d and d != 0) else None
 
-        # ── MAGIA 3: FORZAR ACCIONES REALES (Para evitar el bug de ADR de Yahoo) ──
-        # Si tenemos Market Cap y Precio, ESA es la cantidad real de acciones equivalentes.
-        # Ignoramos la variable "sharesOutstanding" de Yahoo que miente con las clases de acciones.
+        net_debt = (total_debt - cash) if (total_debt is not None and cash is not None) else None
+        ev = (market_cap + net_debt) if (applied_fx_rate and market_cap and net_debt is not None) else clean(extract(ks, "enterpriseValue"))
+        
         if market_cap and price:
             shares_outstanding = market_cap / price
         else:
             shares_outstanding = clean(extract(ks, "sharesOutstanding"))
-        # ──────────────────────────────────────────────────────────────────────────
+
+        domain = None
+        if website:
+            domain = website.replace("https://","").replace("http://","").replace("www.","").split('/')[0]
 
         final_data = {
             "symbol":      symbol,
@@ -377,6 +439,7 @@ async def get_company(ticker: str):
             "financialCurrency": fin_currency, 
             "applied_fx_rate": applied_fx_rate, 
             "website":     website,
+            "domain":      domain,
             "employees":   employees,
             "piotroski":   piotroski,
             "market": {
@@ -384,7 +447,7 @@ async def get_company(ticker: str):
                 "price_change":   price_change,
                 "price_pct":      ratio(price_change, prev_close),
                 "market_cap":     market_cap,
-                "shares_outstanding": shares_outstanding, # <--- Ahora es preciso
+                "shares_outstanding": shares_outstanding, 
                 "ev":             ev,
                 "high_52w":       high_52w,
                 "low_52w":        low_52w,
@@ -413,11 +476,11 @@ async def get_company(ticker: str):
                 "op_margin":  op_margin or ratio(op_income, total_rev),
                 "net_margin": profit_margin or ratio(net_income, total_rev),
                 "roe":        clean(extract(fd, "returnOnEquity")) or ratio(net_income, equity),
-                "roa":        roa or ratio(net_income, total_assets),
+                "roa":        roa or ratio(net_income, (net_income / roa) if (net_income and roa and roa!=0) else None),
                 "ni_cagr":    ni_cagr,
             },
             "balance_sheet": {
-                "total_assets": total_assets,
+                "total_assets": (net_income / roa) if (net_income and roa and roa != 0) else total_assets,
                 "total_liab":   total_liab,
                 "equity":       equity,
                 "total_debt":   total_debt,
