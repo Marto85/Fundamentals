@@ -254,17 +254,16 @@ async def get_company(ticker: str):
                             
                             # Recalculamos EV y Deuda Neta con los valores ya en USD
                             net_debt = (total_debt - cash) if (total_debt is not None and cash is not None) else None
-                            ev = clean(extract(ks, "enterpriseValue")) # Intentamos sacar el EV original
+                            ev = clean(extract(ks, "enterpriseValue"))
                             if not ev and market_cap and net_debt is not None: 
                                 ev = market_cap + net_debt
             except Exception as e:
-                print("Error convirtiendo FX:", e)
+                pass
         # ─────────────────────────────────────────────────────────────
 
         # ── MAGIA 2: ALGORITMO PIOTROSKI Y FALLBACK DE 5 PUNTOS ──
         piotroski = {"score": 0, "is_valid": False, "is_fallback": False, "criteria": {}}
         
-        # Extracción de variables base TTM (para el fallback)
         bs0_temp = bs_list[0] if len(bs_list) > 0 else {}
         cr_ast0 = clean(extract(bs0_temp, "totalCurrentAssets", "currentAssets"))
         cr_liab0 = clean(extract(bs0_temp, "totalCurrentLiabilities", "currentLiabilities"))
@@ -279,10 +278,9 @@ async def get_company(ticker: str):
 
                 ni0 = clean(extract(inc0, "netIncome", "netIncomeApplicableToCommonShares")) or net_income
                 assets0 = clean(extract(bs0, "totalAssets", "assets")) or total_assets
-
-                # Verificamos si Yahoo mandó los datos del año 1 realmente
                 assets1 = clean(extract(bs1, "totalAssets", "assets"))
                 
+                # Verificamos si Yahoo mandó los datos reales
                 if assets0 is not None and assets1 is not None:
                     lt_debt0 = clean(extract(bs0, "longTermDebt", "totalLongTermDebt")) or total_debt or 0
                     gross0 = clean(extract(inc0, "grossProfit", "grossProfits")) or gross_profit
@@ -332,7 +330,7 @@ async def get_company(ticker: str):
         except Exception:
             pass
 
-        # Si el 9-point falla (como en AAPL), armamos el Fallback de Salud Actual (5 puntos)
+        # Fallback de Salud Actual (5 puntos) para AAPL, MSFT, etc.
         if not piotroski["is_valid"]:
             h1 = roa is not None and roa > 0
             h2 = fcf is not None and fcf > 0
@@ -359,12 +357,14 @@ async def get_company(ticker: str):
         def ratio(n, d):
             return n / d if (n is not None and d and d != 0) else None
 
-        net_debt     = (total_debt - cash) if (total_debt is not None and cash is not None) else None
-        ev           = clean(extract(ks, "enterpriseValue")) or (market_cap + net_debt) if (market_cap and net_debt is not None) else None
-        
-        shares_outstanding = clean(extract(ks, "sharesOutstanding"))
-        if not shares_outstanding and market_cap and price:
+        # ── MAGIA 3: FORZAR ACCIONES REALES (Para evitar el bug de ADR de Yahoo) ──
+        # Si tenemos Market Cap y Precio, ESA es la cantidad real de acciones equivalentes.
+        # Ignoramos la variable "sharesOutstanding" de Yahoo que miente con las clases de acciones.
+        if market_cap and price:
             shares_outstanding = market_cap / price
+        else:
+            shares_outstanding = clean(extract(ks, "sharesOutstanding"))
+        # ──────────────────────────────────────────────────────────────────────────
 
         final_data = {
             "symbol":      symbol,
@@ -374,7 +374,8 @@ async def get_company(ticker: str):
             "exchange":    exchange,
             "description": desc or None,
             "currency":    currency,
-            "applied_fx_rate": applied_fx_rate, # <--- Enviamos el dato al frontend
+            "financialCurrency": fin_currency, 
+            "applied_fx_rate": applied_fx_rate, 
             "website":     website,
             "employees":   employees,
             "piotroski":   piotroski,
@@ -383,7 +384,7 @@ async def get_company(ticker: str):
                 "price_change":   price_change,
                 "price_pct":      ratio(price_change, prev_close),
                 "market_cap":     market_cap,
-                "shares_outstanding": shares_outstanding,
+                "shares_outstanding": shares_outstanding, # <--- Ahora es preciso
                 "ev":             ev,
                 "high_52w":       high_52w,
                 "low_52w":        low_52w,
@@ -509,24 +510,9 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/compare")
-async def compare(tickers: str):
-    ticker_list = [t.strip().upper() for t in tickers.split(",")][:8]
-    results = []
-    for ticker in ticker_list:
-        try:
-            data = await get_company(ticker)
-            results.append(data)
-            time.sleep(0.5)
-        except Exception as e:
-            results.append({"symbol": ticker, "error": str(e)})
-    return results
-
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-
 if os.path.exists(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
-
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
