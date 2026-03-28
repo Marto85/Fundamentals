@@ -17,32 +17,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── requests session (solo para búsqueda) ─────────────────────────────────────
-def make_session():
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(max_retries=3)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+# ── requests session (solo para /api/search) ──────────────────────────────────
+def make_requests_session():
+    s = requests.Session()
+    s.mount("https://", requests.adapters.HTTPAdapter(max_retries=3))
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.5",
     })
-    return session
+    return s
 
-_session = make_session()
+_requests_session = make_requests_session()
+
+# ── curl_cffi session para yfinance (bypasses Yahoo cloud blocks) ─────────────
+try:
+    from curl_cffi import requests as curl_requests
+    _yf_session = curl_requests.Session(impersonate="chrome110")
+    print("✅ curl_cffi session initialized with chrome110 impersonation")
+except Exception as e:
+    _yf_session = None
+    print(f"⚠️  curl_cffi not available: {e}")
 
 # ── caché en memoria ──────────────────────────────────────────────────────────
 COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
-CACHE_EXPIRE = 3600  # 1 hora
+CACHE_EXPIRE = 3600
 
 
 def get_ticker(symbol: str):
+    if _yf_session is not None:
+        return yf.Ticker(symbol, session=_yf_session)
     return yf.Ticker(symbol)
 
 
@@ -82,24 +86,20 @@ def safe_fetch(fn, retries=3, delay=3):
     last_err = None
     for attempt in range(retries):
         try:
-            result = fn()
-            return result
+            return fn()
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
-                wait = delay * (2 ** attempt) + random.uniform(0, 1)
-                time.sleep(wait)
+                time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
     raise last_err
 
 
 def validate_info(info, symbol):
-    """Valida que el dict de info tenga al menos algún dato útil."""
     if not info or not isinstance(info, dict):
         raise HTTPException(status_code=404, detail=f"No se encontró '{symbol}'")
-    # Aceptamos cualquier campo que indique que es una empresa real
     has_data = any(info.get(k) for k in [
         "marketCap", "currentPrice", "regularMarketPrice",
-        "previousClose", "longName", "shortName", "symbol",
+        "previousClose", "longName", "shortName",
         "regularMarketOpen", "fiftyTwoWeekHigh"
     ])
     if not has_data:
@@ -113,7 +113,7 @@ async def search(q: str = Query(..., min_length=1)):
     try:
         url = "https://query2.finance.yahoo.com/v1/finance/search"
         params = {"q": q, "quotesCount": 12, "newsCount": 0, "enableFuzzyQuery": False}
-        resp = _session.get(url, params=params, timeout=8)
+        resp = _requests_session.get(url, params=params, timeout=8)
         resp.raise_for_status()
         data = resp.json()
         results = []
