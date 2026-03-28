@@ -95,15 +95,9 @@ def safe_fetch(fn, retries=3, delay=3):
 
 
 def validate_info(info, symbol):
-    if not info or not isinstance(info, dict):
+    # Accept any non-empty dict — missing fields show as — in the frontend
+    if not info or not isinstance(info, dict) or len(info) < 3:
         raise HTTPException(status_code=404, detail=f"No se encontró '{symbol}'")
-    has_data = any(info.get(k) for k in [
-        "marketCap", "currentPrice", "regularMarketPrice",
-        "previousClose", "longName", "shortName",
-        "regularMarketOpen", "fiftyTwoWeekHigh"
-    ])
-    if not has_data:
-        raise HTTPException(status_code=404, detail=f"Empresa '{symbol}' no encontrada o sin datos")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
