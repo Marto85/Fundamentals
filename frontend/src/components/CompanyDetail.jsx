@@ -2,12 +2,100 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, DollarSign, BarChart2,
-  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare, CheckCircle2
+  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare, CheckCircle2, Target
 } from 'lucide-react'
 import MetricCard, { SectionHeader } from './MetricCard'
 import CandlestickChart from './CandlestickChart'
 import CompanyLogo from './CompanyLogo'
 import { fmt, fmtPct, fmtPrice, fmtRatio, colorClass, signPrefix, formatBigNumber } from './utils'
+
+function PopoverInfo({ title, content }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative inline-block ml-2 shrink-0">
+      <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open) }} className="text-muted hover:text-gold transition-colors p-0.5 rounded-full bg-surface focus:outline-none"><Info size={14} /></button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(false) }}/>
+          <div className="absolute z-50 bottom-full mb-2 w-64 -right-2 sm:left-1/2 sm:-translate-x-1/2 bg-card border border-gold/30 p-4 rounded-xl shadow-2xl text-xs text-subtle text-left font-body fade-in cursor-default" onClick={(e) => e.stopPropagation()}>
+            <strong className="block text-text font-display mb-1.5 text-sm">{title}</strong>
+            <div className="space-y-2">{content}</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Tarjeta Adaptable (Maneja Precios USD o Porcentajes %)
+function ValuationCard({ title, value, currentPrice, currency, description, formula, warning, isPercentage = false }) {
+  if (value === null || value === undefined) {
+    return (
+      <div className="glass rounded-xl p-5 border border-border/50 opacity-60">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="font-display font-semibold text-text">{title}</h4>
+          <PopoverInfo title={title} content={<><p>{description}</p><p className="mt-2 text-gold font-mono text-[10px]">{formula}</p></>} />
+        </div>
+        <p className="text-sm text-subtle">Datos insuficientes para aplicar este modelo.</p>
+      </div>
+    )
+  }
+
+  // Lógica si la tarjeta muestra un Porcentaje (Ej: DCF Inverso)
+  if (isPercentage) {
+    return (
+      <div className="glass rounded-xl p-5 border border-sky/20 bg-sky/5">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h4 className="font-display font-semibold text-text mb-1">{title}</h4>
+            <p className="text-xs text-subtle max-w-[85%] leading-relaxed">{description}</p>
+          </div>
+          <PopoverInfo title="Aclaración" content={<><p className="text-xs">{warning}</p><p className="mt-2 font-mono text-[10px] text-gold bg-bg/50 p-2 rounded">{formula}</p></>} />
+        </div>
+        <div className="flex items-end justify-between mt-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Crecimiento Priced-In</p>
+            <p className="font-mono text-2xl font-bold text-sky">{fmtPct(value)} <span className="text-xs font-body font-normal text-muted">/ año</span></p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Lógica si la tarjeta muestra un Precio Objetivo (Graham, Lynch, Mean Reversion)
+  const margin = ((value - currentPrice) / currentPrice) * 100
+  const isUndervalued = margin > 0
+
+  return (
+    <div className={`glass rounded-xl p-5 border ${isUndervalued ? 'border-emerald/30 bg-emerald/5' : 'border-rose/20 bg-rose/5'}`}>
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h4 className="font-display font-semibold text-text mb-1">{title}</h4>
+          <p className="text-xs text-subtle max-w-[85%] leading-relaxed">{description}</p>
+        </div>
+        <PopoverInfo title="Aclaración" content={<><p className="text-xs text-rose">{warning}</p><p className="mt-2 font-mono text-[10px] text-gold bg-bg/50 p-2 rounded">{formula}</p></>} />
+      </div>
+
+      <div className="flex items-end justify-between mt-2">
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Valor Teórico</p>
+          <p className="font-mono text-2xl font-bold text-text">{currency} {value.toFixed(2)}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] uppercase tracking-widest text-muted mb-1">Precio Actual</p>
+          <p className="font-mono text-sm text-subtle">{currency} {currentPrice?.toFixed(2)}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 pt-3 border-t border-border/50 flex justify-between items-center">
+        <span className="text-xs text-muted">Margen de Seguridad</span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${isUndervalued ? 'bg-emerald/20 text-emerald' : 'bg-rose/20 text-rose'}`}>
+          {isUndervalued ? '+' : ''}{margin.toFixed(2)}%
+        </span>
+      </div>
+    </div>
+  )
+}
 
 function Badge({ level, label }) {
   const styles = {
@@ -109,7 +197,7 @@ function ebitdaBadge(ebitda, ev) {
 export default function CompanyDetail({ data }) {
   const [descOpen, setDescOpen] = useState(false)
   const { symbol, name, sector, industry, description, currency, domain, applied_fx_rate,
-          market, revenue, profitability, balance_sheet, cash_flow } = data
+          market, revenue, profitability, balance_sheet, cash_flow, gurus } = data
 
   const priceUp = (market.price_change ?? 0) >= 0
 
@@ -129,7 +217,6 @@ export default function CompanyDetail({ data }) {
       <div className="glass rounded-2xl p-6 mb-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-center gap-4">
-            {/* LOGO AGREGADO AQUÍ */}
             <CompanyLogo domain={domain} ticker={symbol} size={64} className="shrink-0" />
             <div>
               <div className="flex items-center gap-2 mb-1">
@@ -175,7 +262,7 @@ export default function CompanyDetail({ data }) {
               </Link>
               <Link 
                 to={`/fscore/${symbol}`} 
-                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-emerald/10 text-muted hover:text-emerald border border-border hover:border-emerald/30 rounded-lg text-xs font-medium transition-all shadow-sm"
+                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-emerald/10 text-muted hover:text-emerald border border-border hover:border-emerald/30 rounded-lg text-xs font-medium transition-all transition-all shadow-sm"
               >
                 <ActivitySquare size={14} /> F-Score
               </Link>
@@ -184,7 +271,6 @@ export default function CompanyDetail({ data }) {
           </div>
         </div>
 
-        {/* MEJORA 1: CARTEL DE ÉXITO DE CONVERSIÓN FX */}
         {applied_fx_rate && (
           <div className="mt-5 bg-emerald/10 border border-emerald/30 rounded-xl p-4 flex items-start gap-3 fade-in">
             <CheckCircle2 className="text-emerald shrink-0 mt-0.5" size={20} />
@@ -192,13 +278,12 @@ export default function CompanyDetail({ data }) {
               <h4 className="text-emerald font-display font-bold text-sm">Ajuste de Moneda Automático (ADR)</h4>
               <p className="text-subtle text-xs mt-1 leading-relaxed">
                 El sistema detectó que esta empresa reporta balances en moneda local pero cotiza en <strong>{currency}</strong> en este mercado. 
-                Se aplicó automáticamente un tipo de cambio en tiempo real de <strong>{applied_fx_rate.toFixed(4)}</strong> a todos los flujos de caja y deuda para asegurar un cálculo DCF y ratios contables precisos y comparables.
+                Se aplicó automáticamente un tipo de cambio en tiempo real de <strong>{applied_fx_rate.toFixed(4)}</strong> a todos los flujos de caja y deuda para asegurar un cálculo DCF y ratios comparables.
               </p>
             </div>
           </div>
         )}
 
-        {/* MEJORA 2: DATOS DE CAPITALIZACIÓN Y ACCIONES */}
         <div className="sep mb-4 mt-5"></div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
             <MetricCard label="Market Cap" value={formatBigNumber(market.market_cap)} sub="USD" />
@@ -226,7 +311,7 @@ export default function CompanyDetail({ data }) {
         )}
       </div>
 
-      {/* ── VALORACIÓN ─────────────── */}
+      {/* ── MÉTRICAS DE VALORACIÓN ─────────────── */}
       <div>
         <SectionHeader title="Métricas de Valoración" icon={Gauge} />
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
@@ -241,7 +326,56 @@ export default function CompanyDetail({ data }) {
         </div>
       </div>
 
-      {/* ── Resto de las secciones (Mercado, Ingresos, etc) ───────────────── */}
+      {/* ── VALUACIÓN 360° (MODERNA Y CLÁSICA) ─────────────── */}
+      {gurus && (
+        <div className="mt-8 fade-in">
+          <SectionHeader title="Valuación 360° (Múltiples Modelos)" icon={Target} />
+          <div className="grid md:grid-cols-2 gap-4">
+            
+            {/* MODELOS MODERNOS (Los que sí sirven para Tech) */}
+            <ValuationCard
+              title="DCF Inverso (Mercado)"
+              value={gurus.implied_growth}
+              isPercentage={true}
+              description="Usa matemática inversa: asumiendo el Precio Actual y la Caja generada, te dice cuánto crecimiento futuro está esperando el mercado."
+              warning="Si este % es menor a lo que vos creés que la empresa puede crecer, la acción está barata. Ideal para TODO tipo de empresas."
+              formula="Iteración de fórmula DCF (WACC 10%, Terminal 2.5%) resolviendo la incógnita 'g'."
+            />
+            <ValuationCard
+              title="Reversión a la Media"
+              value={gurus.mean_reversion_value}
+              currentPrice={market.price}
+              currency={currency}
+              description="Suaviza las ganancias promediando los últimos 4 años (Earnings Normalizados) y los multiplica por el P/E histórico promedio del mercado (15x)."
+              warning="Excelente para empresas cíclicas (Bancos, Autos, Materias Primas). Falla en startups tecnológicas porque castiga su rápido crecimiento reciente."
+              formula="Promedio 4 Años de Ganancia por Acción × 15"
+            />
+
+            {/* MODELOS CLÁSICOS (Los que fallan en Tech) */}
+            <ValuationCard
+              title="Fair Value de Peter Lynch"
+              value={gurus.lynch_value}
+              currentPrice={market.price}
+              currency={currency}
+              description="La famosa regla PEG=1: el P/E justo de una acción debe igualar su tasa de crecimiento. Excelente para buscar empresas 'GARP' (Crecimiento a Precio Razonable)."
+              warning="El mercado hoy le paga un 'premio de monopolio' gigante a las Big Tech (Ej: Apple, Microsoft). Este modelo ochentero casi siempre dirá que están carísimas."
+              formula="Precio Actual / PEG Ratio Proyectado"
+            />
+            <ValuationCard
+              title="Número de Graham"
+              value={gurus.graham_number}
+              currentPrice={market.price}
+              currency={currency}
+              description="El valor defensivo extremo. Calcula el precio máximo de liquidación de los 'fierros' de la empresa asumiendo topes de P/E y P/B."
+              warning="Hoy solo sirve para valuar Bancos tradicionales o Inmobiliarias. Para empresas digitales que recompran acciones, el valor que arroja carece de sentido."
+              formula="√(22.5 × Ganancia por Acción × Valor Libro por Acción)"
+            />
+
+          </div>
+        </div>
+      )}
+
+      {/* ── Resto de las secciones ───────────────── */}
       <div><SectionHeader title="Datos de Mercado" icon={BarChart2} /><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2"><MetricCard label="Market Cap" value={fmt(market.market_cap)} sub="USD" /><MetricCard label="EV" value={fmt(market.ev)} sub="Enterprise Value" /><MetricCard label="P/E Trailing" value={pe ? pe.toFixed(1)+'x' : '—'} /><MetricCard label="P/E Forward" value={market.forward_pe ? market.forward_pe.toFixed(1)+'x' : '—'} /><MetricCard label="P/B" value={market.pb_ratio ? market.pb_ratio.toFixed(2)+'x' : '—'} /><MetricCard label="P/S" value={market.ps_ratio ? market.ps_ratio.toFixed(2)+'x' : '—'} /><MetricCard label="EV/EBITDA" value={market.ev_ebitda ? market.ev_ebitda.toFixed(1)+'x' : '—'} /><MetricCard label="Beta" value={market.beta ? market.beta.toFixed(2) : '—'} /><MetricCard label="Div. Yield" value={fmtPct(market.dividend_yield)} color={market.dividend_yield ? 'text-emerald' : undefined} /><MetricCard label="Avg 50d" value={fmtPrice(market.avg_50d)} sub="Media 50 días" /></div></div>
       <div><SectionHeader title="Ingresos" icon={DollarSign} /><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2"><MetricCard label="Ingresos Totales" value={fmt(revenue.total)} sub={currency} /><MetricCard label="Ganancia Bruta" value={fmt(revenue.gross_profit)} sub={`Margen: ${fmtPct(revenue.gross_margin)}`} color="text-emerald" /></div></div>
       <div><SectionHeader title="Rentabilidad" icon={TrendingUp} /><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2"><MetricCard label="EBIT" value={fmt(profitability.ebit)} sub={`Margen: ${fmtPct(profitability.op_margin)}`} color={colorClass(profitability.ebit)} /><MetricCard label="D&A" value={fmt(profitability.da)} sub="Deprec. y Amort." /><MetricCard label="EBITDA" value={fmt(profitability.ebitda)} color={colorClass(profitability.ebitda)} /><MetricCard label="Ingreso Neto" value={fmt(profitability.net_income)} sub={`Margen neto: ${fmtPct(profitability.net_margin)}`} color={colorClass(profitability.net_income)} /><MetricCard label="ROE" value={fmtPct(profitability.roe)} color={colorClass(profitability.roe)} /><MetricCard label="ROA" value={fmtPct(profitability.roa)} color={colorClass(profitability.roa)} /><MetricCard label="Margen Bruto" value={fmtPct(revenue.gross_margin)} color={colorClass(revenue.gross_margin)} /><MetricCard label="Margen Operativo" value={fmtPct(profitability.op_margin)} color={colorClass(profitability.op_margin)} /></div></div>

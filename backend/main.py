@@ -41,7 +41,6 @@ COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
-# ── DICCIONARIO GLOBAL DE DOMINIOS CONOCIDOS ──
 KNOWN_DOMAINS = {
     "AAPL": "apple.com", "MSFT": "microsoft.com", "NVDA": "nvidia.com",
     "AMZN": "amazon.com", "TSLA": "tesla.com", "META": "meta.com",
@@ -118,30 +117,22 @@ def safe_fetch(fn, retries=3, delay=3):
                 time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
     raise last_err
 
-# ── LA CASCADA DEFINITIVA (CON LAS APIs QUE INVESTIGASTE) ──
 @app.get("/api/logo/{ticker}")
 async def proxy_logo(ticker: str, domain: str = None):
     ticker_base = ticker.split('.')[0].upper()
-    
     target_domain = domain if (domain and domain not in ["null", "", "None"]) else KNOWN_DOMAINS.get(ticker_base)
-    
     apis = []
     
     if target_domain:
         cd = target_domain.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
         apis.extend([
-            # 1. Las nuevas joyas públicas (Reemplazos directos de Clearbit en HD)
             (f"https://logos.hunter.io/{cd}", 500, False),
             (f"https://api.companyenrich.com/logo/{cd}", 500, False),
-            # 2. Fivicon (La excelente alternativa que encontraste)
             (f"https://fivicon.com/api/v1/logos/{cd}", 500, False),
-            # 3. IconHorse (Excelente rascador como respaldo)
             (f"https://icon.horse/icon/{cd}", 1000, False),
-            # 4. Google V2 (Último recurso de dominios)
             (f"https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://{cd}&size=128", 1000, False)
         ])
         
-    # Agregamos las financieras al final de la fila por si el dominio falla
     apis.extend([
         (f"https://financialmodelingprep.com/image-stock/{ticker_base}.png", 3000, False),
         (f"https://s3-symbol-logo.tradingview.com/{ticker_base.lower()}--big.svg", 300, True)
@@ -151,20 +142,14 @@ async def proxy_logo(ticker: str, domain: str = None):
         try:
             r = _curl.get(url, allow_redirects=True, timeout=2.5)
             ctype = r.headers.get("Content-Type", "")
-            
             if r.status_code == 200 and len(r.content) > min_size:
                 if is_svg:
-                    if b"<svg" in r.content[:100].lower():
-                        return Response(content=r.content, media_type="image/svg+xml")
+                    if b"<svg" in r.content[:100].lower(): return Response(content=r.content, media_type="image/svg+xml")
                 else:
-                    if "image" in ctype:
-                        return Response(content=r.content, media_type=ctype)
-        except Exception:
-            continue
+                    if "image" in ctype: return Response(content=r.content, media_type=ctype)
+        except Exception: continue
             
-    # Si todo falló, se muestra el Avatar de la inicial.
     raise HTTPException(status_code=404, detail="Logo real no encontrado")
-# ────────────────────────────────────────────────────────
 
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1)):
@@ -178,12 +163,10 @@ async def search(q: str = Query(..., min_length=1)):
         r.raise_for_status()
         data = r.json()
         results = []
-        
         for quote in data.get("quotes", []):
             if quote.get("quoteType") in ("EQUITY", "ETF"):
                 symbol_base = quote.get("symbol").split('.')[0].upper()
                 guessed_domain = KNOWN_DOMAINS.get(symbol_base, None)
-
                 results.append({
                     "symbol":   quote.get("symbol"),
                     "name":     quote.get("longname") or quote.get("shortname", ""),
@@ -284,15 +267,24 @@ async def get_company(ticker: str):
             fcf_cagr = ((fcf_history[0] / fcf_history[-1]) ** (1 / years)) - 1
             
         ni_history = []
+        rev_history = []
         for stmt in inc_list:
             ni = clean(extract(stmt, "netIncome", "netIncomeApplicableToCommonShares"))
+            rev_val = clean(extract(stmt, "totalRevenue", "operatingRevenue"))
             if ni is not None:
                 ni_history.append(ni)
+            if rev_val is not None:
+                rev_history.append(rev_val)
                 
         ni_cagr = None
         if len(ni_history) >= 2 and ni_history[0] > 0 and ni_history[-1] > 0:
             years = len(ni_history) - 1
             ni_cagr = ((ni_history[0] / ni_history[-1]) ** (1 / years)) - 1
+
+        rev_cagr = None
+        if len(rev_history) >= 2 and rev_history[0] > 0 and rev_history[-1] > 0:
+            years = len(rev_history) - 1
+            rev_cagr = ((rev_history[0] / rev_history[-1]) ** (1 / years)) - 1
 
         applied_fx_rate = None
         if currency and fin_currency and currency != fin_currency:
@@ -428,6 +420,59 @@ async def get_company(ticker: str):
         if website:
             domain = website.replace("https://","").replace("http://","").replace("www.","").split('/')[0]
 
+        # ── 1 Y 2. GURÚS CLÁSICOS (Graham & Lynch) ──
+        calc_eps = (net_income / shares_outstanding) if (net_income is not None and shares_outstanding) else None
+        calc_bvps = (equity / shares_outstanding) if (equity is not None and shares_outstanding) else None
+
+        graham_number = None
+        if calc_eps and calc_bvps and calc_eps > 0 and calc_bvps > 0:
+            graham_number = math.sqrt(22.5 * calc_eps * calc_bvps)
+
+        lynch_value = None
+        peg_ratio = clean(extract(ks, "pegRatio") or extract(sd, "pegRatio"))
+        
+        if peg_ratio and peg_ratio > 0 and price:
+            lynch_value = price / peg_ratio
+        elif calc_eps and calc_eps > 0:
+            growth_rate = ni_cagr if (ni_cagr and ni_cagr > 0) else rev_cagr
+            if growth_rate and growth_rate > 0:
+                capped_cagr = min(growth_rate, 0.40) 
+                lynch_value = calc_eps * (capped_cagr * 100)
+
+        # ── 3. REVERSIÓN A LA MEDIA (Earnings Normalizados) ──
+        mean_reversion_value = None
+        if len(ni_history) > 0 and shares_outstanding and shares_outstanding > 0:
+            avg_ni = sum(ni_history) / len(ni_history)
+            norm_eps = avg_ni / shares_outstanding
+            if norm_eps > 0:
+                mean_reversion_value = norm_eps * 15 # Asume un P/E de 15x como "promedio justo" histórico
+                
+        # ── 4. DCF INVERSO (Búsqueda Binaria de Crecimiento Implícito) ──
+        implied_growth = None
+        if fcf and fcf > 0 and price and shares_outstanding:
+            target_ev = price * shares_outstanding + (net_debt if net_debt is not None else 0)
+            low, high = -0.50, 1.0 # Rango de prueba: desde -50% hasta 100% de crecimiento anual
+            r_rate, t_growth, proj_years = 0.10, 0.025, 5 # WACC 10%, Terminal 2.5%, 5 Años
+            
+            # Buscador binario: ajusta la tasa 30 veces hasta acertarle al precio de hoy
+            for _ in range(30):
+                mid = (low + high) / 2
+                pv_sum = 0
+                cf = fcf
+                for i in range(1, proj_years + 1):
+                    cf *= (1 + mid)
+                    pv_sum += cf / ((1 + r_rate)**i)
+                tv = (cf * (1 + t_growth)) / (r_rate - t_growth)
+                pv_tv = tv / ((1 + r_rate)**proj_years)
+                calc_ev = pv_sum + pv_tv
+                
+                if calc_ev < target_ev:
+                    low = mid
+                else:
+                    high = mid
+            implied_growth = (low + high) / 2
+        # ───────────────────────────────────────────────────────────────
+
         final_data = {
             "symbol":      symbol,
             "name":        name,
@@ -442,6 +487,14 @@ async def get_company(ticker: str):
             "domain":      domain,
             "employees":   employees,
             "piotroski":   piotroski,
+            "gurus": {
+                "graham_number": graham_number,
+                "lynch_value": lynch_value,
+                "mean_reversion_value": mean_reversion_value,
+                "implied_growth": implied_growth,
+                "eps": calc_eps,
+                "bvps": calc_bvps
+            },
             "market": {
                 "price":          price,
                 "price_change":   price_change,
