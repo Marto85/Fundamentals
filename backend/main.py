@@ -22,7 +22,8 @@ app.add_middleware(
 
 # ── curl_cffi session (bypasses Yahoo cloud blocks) ───────────────────────────
 from curl_cffi import requests as curl_requests
-_curl = curl_requests.Session(impersonate="chrome110")
+# Actualizamos el camuflaje a una versión más reciente
+_curl = curl_requests.Session(impersonate="chrome116")
 print("✅ curl_cffi session ready")
 
 # ── requests session (fallback for search) ────────────────────────────────────
@@ -36,23 +37,19 @@ COMPANY_CACHE: dict = {}
 CHART_CACHE:   dict = {}
 CACHE_EXPIRE = 3600
 
-YAHOO_HEADERS = {
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://finance.yahoo.com",
-}
-
+# ❌ ELIMINAMOS YAHOO_HEADERS. Dejamos que curl_cffi ponga los suyos originales.
 
 def get_crumb():
-    """Fetch Yahoo crumb token usando fc.yahoo.com y dejando que curl_cffi maneje el User-Agent"""
+    """Fetch Yahoo crumb token usando fc.yahoo.com SIN romper el camuflaje"""
     try:
-        # 1. Visitar la URL de cookies de Yahoo para obtener la cookie 'A3'
-        _curl.get("https://fc.yahoo.com", headers=YAHOO_HEADERS, timeout=10, allow_redirects=True)
+        # 1. Obtenemos la cookie 'A3' permitiendo redirecciones, sin headers manuales
+        _curl.get("https://fc.yahoo.com", timeout=10, allow_redirects=True)
         
-        # 2. Pedir el crumb
-        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", headers=YAHOO_HEADERS, timeout=10)
+        # 2. Pedimos el crumb
+        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
         
-        if r.status_code == 200 and r.text and r.text != "null":
+        # Verificamos que sea un token válido y no una página web de error
+        if r.status_code == 200 and r.text and "html" not in r.text.lower():
             return r.text.strip()
             
     except Exception as e:
@@ -60,11 +57,13 @@ def get_crumb():
 
     # 3. Fallback: El método viejo
     try:
-        _curl.get("https://finance.yahoo.com", headers=YAHOO_HEADERS, timeout=10, allow_redirects=True)
-        r = _curl.get("https://query1.finance.yahoo.com/v1/test/getcrumb", headers=YAHOO_HEADERS, timeout=10)
-        return r.text.strip() if r.status_code == 200 else ""
+        _curl.get("https://finance.yahoo.com", timeout=10, allow_redirects=True)
+        r = _curl.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        if r.status_code == 200 and "html" not in r.text.lower():
+            return r.text.strip()
     except:
-        return ""
+        pass
+    return ""
 
 _crumb = None
 
@@ -75,10 +74,6 @@ def fetch_yahoo_info(symbol: str) -> dict:
         _crumb = get_crumb()
 
     modules = "financialData,quoteType,defaultKeyStatistics,assetProfile,summaryDetail,price"
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {"interval": "1d", "range": "5d"}
-
-    # Also fetch summary
     summary_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
     summary_params = {
         "modules": modules,
@@ -86,13 +81,14 @@ def fetch_yahoo_info(symbol: str) -> dict:
         "formatted": "false",
     }
 
-    r = _curl.get(summary_url, params=summary_params, headers=YAHOO_HEADERS, timeout=15)
+    # SIN HEADERS MANUALES
+    r = _curl.get(summary_url, params=summary_params, timeout=15)
 
     if r.status_code == 401 or r.status_code == 403:
         # Refresh crumb and retry
         _crumb = get_crumb()
         summary_params["crumb"] = _crumb
-        r = _curl.get(summary_url, params=summary_params, headers=YAHOO_HEADERS, timeout=15)
+        r = _curl.get(summary_url, params=summary_params, timeout=15)
 
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail=f"Yahoo devolvió {r.status_code} para '{symbol}'")
@@ -111,7 +107,6 @@ def fetch_yahoo_info(symbol: str) -> dict:
 
 
 def extract(d, *keys, default=None):
-    """Extract first found key from nested dict, handling {raw, fmt} format."""
     if not isinstance(d, dict):
         return default
     for k in keys:
@@ -195,7 +190,7 @@ async def search(q: str = Query(..., min_length=1)):
     try:
         url = "https://query2.finance.yahoo.com/v1/finance/search"
         params = {"q": q, "quotesCount": 12, "newsCount": 0, "enableFuzzyQuery": False}
-        r = _curl.get(url, params=params, headers=YAHOO_HEADERS, timeout=8)
+        r = _curl.get(url, params=params, timeout=8)
         r.raise_for_status()
         data = r.json()
         results = []
@@ -225,7 +220,7 @@ async def get_company(ticker: str):
         # Fetch info via direct Yahoo API with curl_cffi
         info = safe_fetch(lambda: fetch_yahoo_info(symbol))
 
-        # Financial statements via yfinance (uses its own session)
+        # Financial statements via yfinance
         t = yf.Ticker(symbol)
         income  = safe_fetch(lambda: t.income_stmt)
         balance = safe_fetch(lambda: t.balance_sheet)
@@ -409,7 +404,7 @@ async def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
             "range":    range_map.get(period, "1y"),
             "crumb":    _crumb or "",
         }
-        r = _curl.get(url, params=params, headers=YAHOO_HEADERS, timeout=15)
+        r = _curl.get(url, params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
 
