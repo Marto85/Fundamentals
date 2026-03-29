@@ -2,13 +2,15 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, DollarSign, BarChart2,
-  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare, CheckCircle2, Target
+  Scale, Activity, ChevronDown, ChevronUp, Info, Gauge, Calculator, ActivitySquare, CheckCircle2, BookOpen, Target, BarChart3
 } from 'lucide-react'
 import MetricCard, { SectionHeader } from './MetricCard'
 import CandlestickChart from './CandlestickChart'
 import CompanyLogo from './CompanyLogo'
+import FinancialCharts from './FinancialCharts' // <--- IMPORTAMOS LOS GRÁFICOS
 import { fmt, fmtPct, fmtPrice, fmtRatio, colorClass, signPrefix, formatBigNumber } from './utils'
 
+// Componente Popover
 function PopoverInfo({ title, content }) {
   const [open, setOpen] = useState(false)
   return (
@@ -41,7 +43,6 @@ function ValuationCard({ title, value, currentPrice, currency, description, form
     )
   }
 
-  // Lógica si la tarjeta muestra un Porcentaje (Ej: DCF Inverso)
   if (isPercentage) {
     return (
       <div className="glass rounded-xl p-5 border border-sky/20 bg-sky/5">
@@ -62,7 +63,6 @@ function ValuationCard({ title, value, currentPrice, currency, description, form
     )
   }
 
-  // Lógica si la tarjeta muestra un Precio Objetivo (Graham, Lynch, Mean Reversion)
   const margin = ((value - currentPrice) / currentPrice) * 100
   const isUndervalued = margin > 0
 
@@ -196,8 +196,10 @@ function ebitdaBadge(ebitda, ev) {
 
 export default function CompanyDetail({ data }) {
   const [descOpen, setDescOpen] = useState(false)
+  const [showDashboards, setShowDashboards] = useState(false) // ESTADO PARA LOS GRÁFICOS
+
   const { symbol, name, sector, industry, description, currency, domain, applied_fx_rate,
-          market, revenue, profitability, balance_sheet, cash_flow, gurus } = data
+          market, revenue, profitability, balance_sheet, cash_flow, gurus, historical_data } = data
 
   const priceUp = (market.price_change ?? 0) >= 0
 
@@ -253,7 +255,7 @@ export default function CompanyDetail({ data }) {
               </p>
             )}
             
-            <div className="flex gap-2 mt-4">
+            <div className="flex flex-wrap justify-end gap-2 mt-4">
               <Link 
                 to={`/dcf/${symbol}`} 
                 className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-gold/10 text-muted hover:text-gold border border-border hover:border-gold/30 rounded-lg text-xs font-medium transition-all shadow-sm"
@@ -262,14 +264,23 @@ export default function CompanyDetail({ data }) {
               </Link>
               <Link 
                 to={`/fscore/${symbol}`} 
-                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-emerald/10 text-muted hover:text-emerald border border-border hover:border-emerald/30 rounded-lg text-xs font-medium transition-all transition-all shadow-sm"
+                className="flex items-center gap-2 px-3 py-1.5 bg-surface hover:bg-emerald/10 text-muted hover:text-emerald border border-border hover:border-emerald/30 rounded-lg text-xs font-medium transition-all shadow-sm"
               >
                 <ActivitySquare size={14} /> F-Score
               </Link>
+              <button 
+                onClick={() => setShowDashboards(!showDashboards)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm border ${showDashboards ? 'bg-sky/10 text-sky border-sky/30' : 'bg-surface text-muted hover:text-sky hover:bg-sky/5 border-border hover:border-sky/30'}`}
+              >
+                <BarChart3 size={14} /> {showDashboards ? 'Ocultar Dashboards' : 'Ver Dashboards'}
+              </button>
             </div>
 
           </div>
         </div>
+
+        {/* ── GRÁFICOS VISUALES ── */}
+        {showDashboards && <FinancialCharts data={historical_data} currency={currency} />}
 
         {applied_fx_rate && (
           <div className="mt-5 bg-emerald/10 border border-emerald/30 rounded-xl p-4 flex items-start gap-3 fade-in">
@@ -332,7 +343,7 @@ export default function CompanyDetail({ data }) {
           <SectionHeader title="Valuación 360° (Múltiples Modelos)" icon={Target} />
           <div className="grid md:grid-cols-2 gap-4">
             
-            {/* MODELOS MODERNOS (Los que sí sirven para Tech) */}
+            {/* MODELOS MODERNOS */}
             <ValuationCard
               title="DCF Inverso (Mercado)"
               value={gurus.implied_growth}
@@ -346,19 +357,19 @@ export default function CompanyDetail({ data }) {
               value={gurus.mean_reversion_value}
               currentPrice={market.price}
               currency={currency}
-              description="Suaviza las ganancias promediando los últimos 4 años (Earnings Normalizados) y los multiplica por el P/E histórico promedio del mercado (15x)."
-              warning="Excelente para empresas cíclicas (Bancos, Autos, Materias Primas). Falla en startups tecnológicas porque castiga su rápido crecimiento reciente."
-              formula="Promedio 4 Años de Ganancia por Acción × 15"
+              description="Suaviza las ganancias promediando los últimos años y lo multiplica por el P/E histórico base del mercado (15x)."
+              warning="Excelente para empresas cíclicas (Bancos, Materias Primas). Falla en startups tecnológicas porque no valora el crecimiento agresivo."
+              formula="Promedio Histórico de Ganancia por Acción × 15"
             />
 
-            {/* MODELOS CLÁSICOS (Los que fallan en Tech) */}
+            {/* MODELOS CLÁSICOS */}
             <ValuationCard
               title="Fair Value de Peter Lynch"
               value={gurus.lynch_value}
               currentPrice={market.price}
               currency={currency}
               description="La famosa regla PEG=1: el P/E justo de una acción debe igualar su tasa de crecimiento. Excelente para buscar empresas 'GARP' (Crecimiento a Precio Razonable)."
-              warning="El mercado hoy le paga un 'premio de monopolio' gigante a las Big Tech (Ej: Apple, Microsoft). Este modelo ochentero casi siempre dirá que están carísimas."
+              warning="El mercado hoy le paga un 'premio de monopolio' a las Big Tech. Este modelo ochentero casi siempre dirá que están caras."
               formula="Precio Actual / PEG Ratio Proyectado"
             />
             <ValuationCard
@@ -366,7 +377,7 @@ export default function CompanyDetail({ data }) {
               value={gurus.graham_number}
               currentPrice={market.price}
               currency={currency}
-              description="El valor defensivo extremo. Calcula el precio máximo de liquidación de los 'fierros' de la empresa asumiendo topes de P/E y P/B."
+              description="El valor defensivo extremo. Calcula el precio máximo de liquidación asumiendo topes de P/E y P/B."
               warning="Hoy solo sirve para valuar Bancos tradicionales o Inmobiliarias. Para empresas digitales que recompran acciones, el valor que arroja carece de sentido."
               formula="√(22.5 × Ganancia por Acción × Valor Libro por Acción)"
             />

@@ -85,6 +85,79 @@ def fetch_yahoo_info(symbol: str) -> dict:
 
     return result[0]
 
+# ── NUEVA FUNCIÓN: EXTRACTOR DE HISTORIAL PROFUNDO DE YAHOO ──
+def fetch_yahoo_history(symbol: str) -> list:
+    """Extrae el historial usando el endpoint moderno y secreto de Yahoo"""
+    try:
+        url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{symbol}"
+        end_time = int(time.time())
+        start_time = end_time - (5 * 366 * 24 * 3600) # Últimos 5 años
+        
+        # Le pedimos específicamente los datos exactos que necesitamos
+        types = [
+            "annualTotalRevenue", "annualNetIncomeCommonStockholders", "annualNetIncome",
+            "annualTotalAssets", "annualTotalLiabilitiesNetMinorityInterest", "annualTotalDebt",
+            "annualOperatingCashFlow", "annualCapitalExpenditure", "annualFreeCashFlow"
+        ]
+        
+        params = {
+            "period1": start_time,
+            "period2": end_time,
+            "type": ",".join(types),
+            "merge": "false",
+            "padTimeSeries": "true"
+        }
+        
+        r = _curl.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            return []
+            
+        data = r.json()
+        timeseries = data.get("timeseries", {}).get("result", [])
+        
+        history_dict = {}
+        
+        for item in timeseries:
+            meta = item.get("meta", {})
+            t_type = meta.get("type", [])
+            if not t_type: continue
+            t_type = t_type[0]
+            
+            for ts in item.get(t_type, []):
+                date_str = ts.get("asOfDate")
+                if not date_str: continue
+                year = date_str.split("-")[0]
+                val = ts.get("reportedValue", {}).get("raw")
+                if val is None: continue
+                
+                if year not in history_dict:
+                    history_dict[year] = {
+                        "year": year, "revenue": None, "net_income": None,
+                        "assets": None, "liabilities": None, "debt": None,
+                        "op_cf": None, "capex": None, "fcf": None
+                    }
+                
+                # Mapeamos los datos de Yahoo a nuestro formato
+                if t_type == "annualTotalRevenue": history_dict[year]["revenue"] = val
+                elif t_type in ("annualNetIncome", "annualNetIncomeCommonStockholders"): history_dict[year]["net_income"] = val
+                elif t_type == "annualTotalAssets": history_dict[year]["assets"] = val
+                elif t_type == "annualTotalLiabilitiesNetMinorityInterest": history_dict[year]["liabilities"] = val
+                elif t_type == "annualTotalDebt": history_dict[year]["debt"] = val
+                elif t_type == "annualOperatingCashFlow": history_dict[year]["op_cf"] = val
+                elif t_type == "annualCapitalExpenditure": history_dict[year]["capex"] = val
+                elif t_type == "annualFreeCashFlow": history_dict[year]["fcf"] = val
+
+        # Cálculo de rescate por si Yahoo no manda el FCF directamente
+        for y, d in history_dict.items():
+            if d["fcf"] is None and d["op_cf"] is not None and d["capex"] is not None:
+                d["fcf"] = d["op_cf"] - abs(d["capex"])
+
+        return sorted(list(history_dict.values()), key=lambda x: x["year"])
+    except Exception as e:
+        print(f"Error extrayendo historia profunda: {e}")
+        return []
+# ─────────────────────────────────────────────────────────────
+
 def extract(d, *keys, default=None):
     if not isinstance(d, dict): return default
     for k in keys:
@@ -189,6 +262,9 @@ async def get_company(ticker: str):
 
     try:
         info = safe_fetch(lambda: fetch_yahoo_info(symbol))
+        
+        # ── NUEVA EXTRACCIÓN DE HISTORIAL SEPARADA ──
+        historical_data = safe_fetch(lambda: fetch_yahoo_history(symbol), retries=2)
 
         fd = info.get("financialData", {})
         ks = info.get("defaultKeyStatistics", {})
@@ -312,6 +388,11 @@ async def get_company(ticker: str):
                             op_cf = op_cf * rate if op_cf else None
                             fcf = fcf * rate if fcf else None
                             capex = capex * rate if capex else None
+                            
+                            # Aplicamos la conversión al historial nuevo
+                            for d in historical_data:
+                                for k in ["revenue", "net_income", "assets", "liabilities", "debt", "op_cf", "capex", "fcf"]:
+                                    if d.get(k) is not None: d[k] *= rate
             except Exception as e:
                 pass
 
@@ -420,7 +501,6 @@ async def get_company(ticker: str):
         if website:
             domain = website.replace("https://","").replace("http://","").replace("www.","").split('/')[0]
 
-        # ── 1 Y 2. GURÚS CLÁSICOS (Graham & Lynch) ──
         calc_eps = (net_income / shares_outstanding) if (net_income is not None and shares_outstanding) else None
         calc_bvps = (equity / shares_outstanding) if (equity is not None and shares_outstanding) else None
 
@@ -439,22 +519,19 @@ async def get_company(ticker: str):
                 capped_cagr = min(growth_rate, 0.40) 
                 lynch_value = calc_eps * (capped_cagr * 100)
 
-        # ── 3. REVERSIÓN A LA MEDIA (Earnings Normalizados) ──
         mean_reversion_value = None
         if len(ni_history) > 0 and shares_outstanding and shares_outstanding > 0:
             avg_ni = sum(ni_history) / len(ni_history)
             norm_eps = avg_ni / shares_outstanding
             if norm_eps > 0:
-                mean_reversion_value = norm_eps * 15 # Asume un P/E de 15x como "promedio justo" histórico
+                mean_reversion_value = norm_eps * 15 
                 
-        # ── 4. DCF INVERSO (Búsqueda Binaria de Crecimiento Implícito) ──
         implied_growth = None
         if fcf and fcf > 0 and price and shares_outstanding:
             target_ev = price * shares_outstanding + (net_debt if net_debt is not None else 0)
-            low, high = -0.50, 1.0 # Rango de prueba: desde -50% hasta 100% de crecimiento anual
-            r_rate, t_growth, proj_years = 0.10, 0.025, 5 # WACC 10%, Terminal 2.5%, 5 Años
+            low, high = -0.50, 1.0 
+            r_rate, t_growth, proj_years = 0.10, 0.025, 5 
             
-            # Buscador binario: ajusta la tasa 30 veces hasta acertarle al precio de hoy
             for _ in range(30):
                 mid = (low + high) / 2
                 pv_sum = 0
@@ -471,7 +548,6 @@ async def get_company(ticker: str):
                 else:
                     high = mid
             implied_growth = (low + high) / 2
-        # ───────────────────────────────────────────────────────────────
 
         final_data = {
             "symbol":      symbol,
@@ -487,6 +563,7 @@ async def get_company(ticker: str):
             "domain":      domain,
             "employees":   employees,
             "piotroski":   piotroski,
+            "historical_data": historical_data,
             "gurus": {
                 "graham_number": graham_number,
                 "lynch_value": lynch_value,
