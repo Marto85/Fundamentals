@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Filter, Search, ArrowRight, Zap, Activity, Bug, AlertCircle,
+  Filter, Search, ArrowRight, Zap, Activity, AlertCircle,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RotateCcw
 } from 'lucide-react';
 import { API_URL } from './utils';
@@ -47,7 +47,6 @@ export default function Screener() {
   const [loading,     setLoading]     = useState(false);
   const [response,    setResponse]    = useState(null);
   const [page,        setPage]        = useState(1);
-  const [showDebug,   setShowDebug]   = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [error,       setError]       = useState(null);
   const [criteria,    setCriteria]    = useState({ ...DEFAULTS });
@@ -99,13 +98,6 @@ export default function Screener() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowDebug(v => !v)}
-            className={`p-2.5 rounded-xl border transition-all ${showDebug ? 'bg-rose/20 border-rose/50 text-rose' : 'bg-surface border-border/50 text-muted hover:text-subtle'}`}
-            title="Debug"
-          >
-            <Bug size={16} />
-          </button>
           <button
             onClick={reset}
             className="flex items-center gap-1.5 px-3 py-2.5 glass rounded-xl border border-border/50 text-muted hover:text-subtle text-xs font-mono transition-all"
@@ -189,24 +181,6 @@ export default function Screener() {
         <div className="glass rounded-xl p-3 flex items-center gap-3 border border-rose/30 bg-rose/5 text-rose">
           <AlertCircle size={16} />
           <p className="text-sm">{error}</p>
-        </div>
-      )}
-
-      {/* ══ DEBUG ════════════════════════════════════════════════════════════ */}
-      {showDebug && companies.length > 0 && (
-        <div className="glass p-4 rounded-xl border border-gold/20">
-          <p className="text-[10px] font-mono text-gold uppercase tracking-widest mb-2">// Debug — primeros 2 resultados</p>
-          <pre className="text-[10px] text-emerald/80 overflow-auto max-h-48">
-            {JSON.stringify(companies.slice(0, 2).map(r => ({
-              symbol: r.symbol,
-              roe:        r.roe        != null ? (r.roe*100).toFixed(2)+'%'        : '—',
-              margin:     r.margin     != null ? (r.margin*100).toFixed(2)+'%'     : '—',
-              fcf_margin: r.fcf_margin != null ? (r.fcf_margin*100).toFixed(2)+'%' : '—',
-              mkcap_fcf: r.mkcap_fcf, ps_ratio: r.ps_ratio,
-              div_yield:  r.div_yield  != null ? (r.div_yield*100).toFixed(3)+'%'  : '—',
-              _raw: r._screener_raw, src: r._enrich_source,
-            })), null, 2)}
-          </pre>
         </div>
       )}
 
@@ -302,7 +276,7 @@ function StockRow({ stock: s, navigate }) {
     <tr onClick={() => navigate(`/company/${s.symbol}`)} className="hover:bg-gold/10 cursor-pointer transition-all group">
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <CompanyLogo ticker={s.symbol} size={30} className="rounded-lg shadow-sm flex-shrink-0" />
+          <CompanyLogo ticker={s.symbol} domain={s.domain} size={30} className="rounded-lg shadow-sm flex-shrink-0" />
           <div className="min-w-0">
             <p className="font-mono text-[11px] font-bold text-sky leading-none mb-0.5">{s.symbol}</p>
             <p className="text-xs font-semibold text-text truncate">{s.name}</p>

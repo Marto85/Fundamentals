@@ -7,6 +7,9 @@ import math
 import time
 import random
 import os
+import json
+import hashlib
+import re
 
 app = FastAPI(title="Stock Analyzer API")
 
@@ -40,6 +43,15 @@ reset_session()
 COMPANY_CACHE: dict = {}
 CACHE_EXPIRE = 3600
 
+# Screener results cache — keyed by hashed criteria (excl. page/per_page).
+# Avoids re-fetching Yahoo + re-enriching 50 tickers on every page change.
+SCREENER_CACHE: dict = {}
+SCREENER_CACHE_TTL = 300  # 5 minutes
+
+def screener_cache_key(criteria: dict) -> str:
+    relevant = {k: v for k, v in criteria.items() if k not in ('page', 'per_page')}
+    return hashlib.md5(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
+
 KNOWN_DOMAINS = {
     "AAPL": "apple.com", "MSFT": "microsoft.com", "NVDA": "nvidia.com",
     "AMZN": "amazon.com", "TSLA": "tesla.com", "META": "meta.com",
@@ -55,7 +67,58 @@ KNOWN_DOMAINS = {
     "PEP": "pepsico.com", "JNJ": "jnj.com", "BRK-B": "berkshirehathaway.com",
     "BRK-A": "berkshirehathaway.com", "V": "visa.com", "MA": "mastercard.com",
     "WMT": "walmart.com", "DIS": "thewaltdisneycompany.com",
-    "JPM": "jpmorganchase.com"
+    "JPM": "jpmorganchase.com",
+    # Extended — common large-caps that appear in screener results
+    "UNH": "unitedhealthgroup.com", "LLY": "lilly.com",
+    "XOM": "exxonmobil.com",        "CVX": "chevron.com",
+    "PG":  "pg.com",                "ABBV": "abbvie.com",
+    "MRK": "merck.com",             "COST": "costco.com",
+    "BAC": "bankofamerica.com",     "CRM": "salesforce.com",
+    "ORCL": "oracle.com",           "CSCO": "cisco.com",
+    "ACN": "accenture.com",         "TMO": "thermofisher.com",
+    "AVGO": "broadcom.com",         "ABT": "abbott.com",
+    "VZ": "verizon.com",            "ADBE": "adobe.com",
+    "TXN": "ti.com",                "NKE": "nike.com",
+    "QCOM": "qualcomm.com",         "HON": "honeywell.com",
+    "NEE": "nexteraenergy.com",     "RTX": "rtx.com",
+    "UPS": "ups.com",               "MS": "morganstanley.com",
+    "GS": "goldmansachs.com",       "BLK": "blackrock.com",
+    "SCHW": "schwab.com",           "C": "citigroup.com",
+    "WFC": "wellsfargo.com",        "USB": "usbank.com",
+    "AXP": "americanexpress.com",   "SPGI": "spglobal.com",
+    "MCO": "moodys.com",            "MMC": "mmc.com",
+    "PFE": "pfizer.com",            "BMY": "bms.com",
+    "AMGN": "amgen.com",            "GILD": "gilead.com",
+    "REGN": "regeneron.com",        "VRTX": "vrtx.com",
+    "ISRG": "intuitivesurgical.com","SYK": "stryker.com",
+    "MDT": "medtronic.com",         "ELV": "elevancehealth.com",
+    "CI": "cigna.com",              "HUM": "humana.com",
+    "LOW": "lowes.com",             "HD": "homedepot.com",
+    "TGT": "target.com",            "MCD": "mcdonalds.com",
+    "SBUX": "starbucks.com",        "CMG": "chipotle.com",
+    "F": "ford.com",                "GM": "gm.com",
+    "CAT": "caterpillar.com",       "DE": "deere.com",
+    "BA": "boeing.com",             "LMT": "lockheedmartin.com",
+    "GE": "ge.com",                 "EMR": "emerson.com",
+    "MMM": "3m.com",                "UNP": "up.com",
+    "CSX": "csx.com",               "NSC": "nscorp.com",
+    "AMT": "americantower.com",     "PLD": "prologis.com",
+    "CCI": "crowncastle.com",       "EQIX": "equinix.com",
+    "SO": "southerncompany.com",    "DUK": "duke-energy.com",
+    "D": "dominionenergy.com",      "SRE": "sempra.com",
+    "NOW": "servicenow.com",        "SNOW": "snowflake.com",
+    "UBER": "uber.com",             "LYFT": "lyft.com",
+    "ABNB": "airbnb.com",           "DASH": "doordash.com",
+    "SHOP": "shopify.com",          "SQ": "squareup.com",
+    "PYPL": "paypal.com",           "COIN": "coinbase.com",
+    "PANW": "paloaltonetworks.com", "CRWD": "crowdstrike.com",
+    "ZS": "zscaler.com",            "OKTA": "okta.com",
+    "NET": "cloudflare.com",        "DDOG": "datadoghq.com",
+    "MDB": "mongodb.com",           "ESTC": "elastic.co",
+    "TTD": "thetradedesk.com",      "PLTR": "palantir.com",
+    "ARM": "arm.com",               "AMAT": "appliedmaterials.com",
+    "LRCX": "lamresearch.com",      "KLAC": "kla.com",
+    "ASML": "asml.com",             "SMCI": "supermicro.com",
 }
 
 def extract(d, *keys, default=None):
@@ -186,7 +249,7 @@ def fetch_financial_ratios(symbol: str) -> dict:
     try:
         url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
         r = _curl.get(url, params={
-            "modules": "financialData,defaultKeyStatistics,summaryDetail",
+            "modules": "financialData,defaultKeyStatistics,summaryDetail,assetProfile",
             "crumb": _crumb,
             "formatted": "false",
         }, timeout=10)
@@ -201,6 +264,15 @@ def fetch_financial_ratios(symbol: str) -> dict:
         fd = result[0].get("financialData", {})
         ks = result[0].get("defaultKeyStatistics", {})
         sd = result[0].get("summaryDetail", {})
+        ap = result[0].get("assetProfile", {})
+
+        # Extract clean domain from Yahoo's website field (e.g. "https://www.apple.com" → "apple.com")
+        website_domain = None
+        website = ap.get("website", "")
+        if website:
+            m = re.match(r'https?://(?:www\.)?([^/]+)', website)
+            if m:
+                website_domain = m.group(1)
 
         def c(v):
             if v is None: return None
@@ -234,6 +306,7 @@ def fetch_financial_ratios(symbol: str) -> dict:
             "div_yield":     div_yield,
             "fcf_raw":       fcf,
             "total_rev_raw": total_rev,
+            "website_domain": website_domain,
             "_source":       "quoteSummary",
         }
     except Exception as e:
@@ -269,6 +342,10 @@ def enrich_screener_results(quotes: list, max_enrich: int = 25) -> list:
         rev_raw    = ratios.get("total_rev_raw")
         q["mkcap_fcf"] = (market_cap / fcf_raw) if (market_cap and fcf_raw and fcf_raw > 0) else None
         q["ps_ratio"]  = (market_cap / rev_raw)  if (market_cap and rev_raw  and rev_raw  > 0) else None
+
+        # Override domain with live website from Yahoo assetProfile when available
+        if ratios.get("website_domain"):
+            q["domain"] = ratios["website_domain"]
 
         # Override div_yield with sanitized summaryDetail value when available
         if ratios.get("div_yield") is not None:
@@ -530,6 +607,22 @@ async def stock_screener(criteria: dict):
         per_page = int(criteria.get("per_page", 15))
         offset   = (page - 1) * per_page
 
+        # ── Cache check: if same criteria was run recently, skip re-fetching ──
+        cache_key = screener_cache_key(criteria)
+        now = time.time()
+        if cache_key in SCREENER_CACHE and (now - SCREENER_CACHE[cache_key]["timestamp"] < SCREENER_CACHE_TTL):
+            filtered = SCREENER_CACHE[cache_key]["filtered"]
+            total      = len(filtered)
+            page_items = filtered[offset: offset + per_page]
+            return {
+                "total":    total,
+                "page":     page,
+                "per_page": per_page,
+                "pages":    max(1, math.ceil(total / per_page)),
+                "results":  page_items,
+                "_cached":  True,
+            }
+
         # Phase 1: Yahoo screener broad pre-filter
         operands = [
             {"operator": "eq",  "operands": ["region", "us"]},
@@ -563,13 +656,15 @@ async def stock_screener(criteria: dict):
                 dy_raw = q.get("dividendYield")
                 div_yield = _sanitize_div_yield(float(dy_raw) / 100.0 if dy_raw is not None else None)
 
+            sym = q.get("symbol", "")
             candidates.append({
-                "symbol":     q.get("symbol"),
+                "symbol":     sym,
                 "name":       q.get("shortName") or q.get("longName"),
                 "price":      q.get("regularMarketPrice"),
                 "change_pct": q.get("regularMarketChangePercent"),
                 "market_cap": q.get("marketCap"),
                 "pe":         q.get("trailingPE") or q.get("forwardPE"),
+                "domain":     KNOWN_DOMAINS.get(sym.split('-')[0].split('.')[0].upper()),
                 "roe":        None,
                 "margin":     None,
                 "net_margin": None,
@@ -639,6 +734,10 @@ async def stock_screener(criteria: dict):
             return True
 
         filtered   = [c for c in candidates if passes(c)]
+
+        # Store in cache so page changes are instant (TTL = SCREENER_CACHE_TTL)
+        SCREENER_CACHE[cache_key] = {"timestamp": now, "filtered": filtered}
+
         total      = len(filtered)
         page_items = filtered[offset: offset + per_page]
 
