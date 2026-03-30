@@ -1,12 +1,14 @@
 import { useState, useCallback, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useLocation } from 'react-router-dom'
-import { BarChart2, GitCompare, Loader2, AlertCircle, X, RefreshCw, Calculator, ActivitySquare } from 'lucide-react'
+// Agregamos 'Filter' a los imports de lucide-react
+import { BarChart2, GitCompare, Loader2, AlertCircle, X, RefreshCw, Calculator, ActivitySquare, Filter } from 'lucide-react'
 import SearchBar from './components/SearchBar'
 import CompanyDetail from './components/CompanyDetail'
 import ComparisonView from './components/ComparisonView'
 import DCFView from './components/DCFView'
 import FScoreView from './components/FScoreView'
 import { API_URL } from './components/utils'
+import Screener from './components/Screener';
 
 function SingleCompanyView() {
   const { ticker } = useParams()
@@ -160,7 +162,6 @@ function AppLayout() {
             >
               <Calculator size={14} /> Calculadora DCF
             </button>
-            {/* NUEVA PESTAÑA F-SCORE */}
             <button
               onClick={() => navigate('/fscore')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
@@ -170,11 +171,23 @@ function AppLayout() {
             >
               <ActivitySquare size={14} /> F-Score (Salud)
             </button>
+
+            {/* ── NUEVA PESTAÑA SCREENER ── */}
+            <Link
+              to="/screener"
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-body font-medium transition-all whitespace-nowrap
+                ${location.pathname === '/screener'
+                  ? 'bg-gold/15 text-gold border border-gold/25'
+                  : 'text-muted hover:text-subtle hover:bg-surface'}`}
+            >
+              <Filter size={14} /> Screener
+            </Link>
           </nav>
 
           {!location.pathname.startsWith('/compare') && 
            !location.pathname.startsWith('/dcf') && 
-           !location.pathname.startsWith('/fscore') && (
+           !location.pathname.startsWith('/fscore') && 
+           !location.pathname.startsWith('/screener') && ( // Ocultamos barra de búsqueda en screener si querés más espacio
             <SearchBar
               onSelect={item => navigate(`/company/${item.symbol}`)}
               className="flex-1 max-w-md ml-auto"
@@ -222,9 +235,10 @@ function AppLayout() {
           <Route path="/dcf" element={<DCFView />} />
           <Route path="/dcf/:ticker" element={<DCFView />} />
           
-          {/* NUEVAS RUTAS F-SCORE */}
           <Route path="/fscore" element={<FScoreView />} />
           <Route path="/fscore/:ticker" element={<FScoreView />} />
+
+          <Route path="/screener" element={<Screener />} />
 
         </Routes>
       </main>
